@@ -26,7 +26,7 @@ class LogisterClient:
     release: str | None = None
     default_context: Mapping[str, Any] | None = None
     capture_locals: bool = False
-    user_agent: str = "logister-python/0.1.0"
+    user_agent: str = "logister-python/0.2.0"
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
 
     @classmethod

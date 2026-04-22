@@ -269,7 +269,7 @@ client.check_in(
 
 This package is intended to publish to PyPI with Trusted Publishing from GitHub Actions.
 
-- Push a tag like `v0.1.0`
+- Push a tag like `v0.2.0`
 - GitHub Actions builds the distributions
 - PyPI Trusted Publishing handles the upload with OIDC
 
