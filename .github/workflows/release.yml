@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  github-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          notes=$(awk -v tag="$TAG_NAME" '
+            $0 ~ "^## " tag " - " {capture=1; next}
+            capture && $0 ~ /^## / {exit}
+            capture {print}
+          ' CHANGELOG.md)
+          gh release create "$TAG_NAME" --title "$TAG_NAME" --notes "$notes" || gh release edit "$TAG_NAME" --title "$TAG_NAME" --notes "$notes"

@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "logister-python"
+version = "0.1.0"
+description = "Python SDK for sending errors, logs, metrics, transactions, and check-ins to Logister."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "Taimoor Qureshi" }
+]
+keywords = ["logister", "observability", "error-tracking", "monitoring", "python"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules"
+]
+dependencies = [
+  "httpx>=0.27,<1"
+]
+
+[project.urls]
+Homepage = "https://docs.logister.org/integrations/python/"
+Documentation = "https://docs.logister.org/integrations/python/"
+Source = "https://github.com/taimoorq/logister-python"
+Issues = "https://github.com/taimoorq/logister-python/issues"
+Changelog = "https://github.com/taimoorq/logister-python/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+fastapi = [
+  "fastapi>=0.110,<1"
+]
+celery = [
+  "celery>=5.4,<6"
+]
+django = [
+  "django>=4.2,<6"
+]
+dev = [
+  "build>=1.2.2",
+  "pytest>=8.3,<9"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/logister"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

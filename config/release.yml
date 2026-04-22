@@ -1,0 +1,2 @@
+create_github_release_on_tag: true
+release_source: CHANGELOG.md
