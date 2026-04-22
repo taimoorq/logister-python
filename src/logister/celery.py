@@ -161,6 +161,9 @@ def _task_context(
         context["task_kwargs_keys"] = sorted(kwargs.keys())
     if retval is not None and isinstance(retval, (str, int, float, bool)):
         context["task_result"] = retval
+    task_module = getattr(task, "__module__", None) or getattr(getattr(task, "__class__", None), "__module__", None)
+    if task_module:
+        context["task_module"] = task_module
     delivery_info = getattr(getattr(task, "request", None), "delivery_info", None) or {}
     if isinstance(delivery_info, dict):
         queue = delivery_info.get("routing_key") or delivery_info.get("exchange")
@@ -169,4 +172,10 @@ def _task_context(
     retries = getattr(getattr(task, "request", None), "retries", None)
     if retries is not None:
         context["retries"] = retries
+    eta = getattr(getattr(task, "request", None), "eta", None)
+    if eta is not None:
+        context["eta"] = str(eta)
+    hostname = getattr(getattr(task, "request", None), "hostname", None)
+    if hostname:
+        context["hostname"] = hostname
     return context

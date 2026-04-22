@@ -93,11 +93,27 @@ def _transaction_name(request: Any, transaction_namer: TransactionNamer | None) 
 
 
 def _request_context(request: Any, *, status_code: int | None) -> dict[str, Any]:
+    headers = {
+        key: value
+        for key in ("Host", "User-Agent", "Accept", "Referer", "X-Forwarded-For", "X-Request-Id", "X-Trace-Id")
+        if (value := _header(request, key))
+    }
     context = {
         "framework": "flask",
         "method": getattr(request, "method", "GET"),
         "path": getattr(request, "path", "/"),
         "status_code": status_code,
+        "url": getattr(request, "url", None),
+        "request": {
+            "method": getattr(request, "method", "GET"),
+            "path": getattr(request, "path", "/"),
+            "url": getattr(request, "url", None),
+            "headers": headers,
+            "query_string": None,
+            "endpoint": getattr(request, "endpoint", None),
+            "blueprint": getattr(request, "blueprint", None),
+            "view_args": dict(getattr(request, "view_args", {}) or {}),
+        },
     }
 
     query_string = getattr(request, "query_string", b"")
@@ -107,10 +123,12 @@ def _request_context(request: Any, *, status_code: int | None) -> dict[str, Any]
         decoded = str(query_string or "")
     if decoded:
         context["query_string"] = decoded
+        context["request"]["query_string"] = decoded
 
     remote_addr = getattr(request, "remote_addr", None)
     if remote_addr:
         context["client_ip"] = remote_addr
+        context["request"]["client_ip"] = remote_addr
 
     endpoint = getattr(request, "endpoint", None)
     if endpoint:

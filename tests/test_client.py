@@ -1,11 +1,21 @@
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 
-from logister import LogisterClient, LogisterMiddleware, build_django_middleware, instrument_celery, instrument_fastapi, instrument_flask
+from logister import (
+    LogisterClient,
+    LogisterLoggingHandler,
+    LogisterMiddleware,
+    build_django_middleware,
+    instrument_celery,
+    instrument_fastapi,
+    instrument_flask,
+    instrument_logging,
+)
 
 
 def test_send_event_wraps_payload_and_sets_auth_header() -> None:
@@ -69,6 +79,7 @@ def test_from_env_builds_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGISTER_TIMEOUT", "9.5")
     monkeypatch.setenv("LOGISTER_ENVIRONMENT", "staging")
     monkeypatch.setenv("LOGISTER_RELEASE", "sha-123")
+    monkeypatch.setenv("LOGISTER_CAPTURE_LOCALS", "true")
 
     client = LogisterClient.from_env(default_context={"service": "billing"})
 
@@ -77,11 +88,12 @@ def test_from_env_builds_client(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.timeout == 9.5
     assert client.environment == "staging"
     assert client.release == "sha-123"
+    assert client.capture_locals is True
     assert client.default_context == {"service": "billing"}
 
 
 def test_capture_exception_includes_python_traceback_frames() -> None:
-    client = LogisterClient(api_key="test-token", base_url="https://logister.example")
+    client = LogisterClient(api_key="test-token", base_url="https://logister.example", capture_locals=True)
     response = Mock()
     response.json.return_value = {"status": "accepted"}
     response.raise_for_status.return_value = None
@@ -91,17 +103,88 @@ def test_capture_exception_includes_python_traceback_frames() -> None:
         client_instance.post.return_value = response
 
         try:
-            raise ValueError("broken checkout")
-        except ValueError as exc:
+            try:
+                order_id = "ord_123"
+                raise ValueError("broken checkout")
+            except ValueError as inner:
+                raise RuntimeError("checkout failed") from inner
+        except RuntimeError as exc:
             client.capture_exception(exc)
 
     _, kwargs = client_instance.post.call_args
     exception = kwargs["json"]["event"]["context"]["exception"]
-    assert exception["class"] == "ValueError"
-    assert exception["message"] == "broken checkout"
+    assert exception["class"] == "RuntimeError"
+    assert exception["message"] == "checkout failed"
+    assert exception["qualified_class"] == "builtins.RuntimeError"
     assert exception["frames"]
     assert exception["backtrace"]
     assert exception["frames"][-1]["name"] == "test_capture_exception_includes_python_traceback_frames"
+    assert exception["frames"][-1]["locals"]["order_id"] == "'ord_123'"
+    assert exception["cause"]["class"] == "ValueError"
+    assert exception["cause"]["message"] == "broken checkout"
+    assert kwargs["json"]["event"]["context"]["runtime"] == "python"
+    assert "python_version" in kwargs["json"]["event"]["context"]
+    assert "hostname" in kwargs["json"]["event"]["context"]
+
+
+def test_logging_handler_captures_log_records() -> None:
+    client = Mock(spec=LogisterClient)
+    handler = LogisterLoggingHandler(client, context={"service": "api"})
+
+    logger = logging.getLogger("logister.tests.messages")
+    logger.handlers = []
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
+    logger.warning("Cache miss", extra={"request_id": "req-501", "trace_id": "trace-501", "cache": "primary"})
+
+    client.capture_message.assert_called_once()
+    _, kwargs = client.capture_message.call_args
+    assert kwargs["level"] == "warning"
+    assert kwargs["request_id"] == "req-501"
+    assert kwargs["trace_id"] == "trace-501"
+    assert kwargs["context"]["service"] == "api"
+    assert kwargs["context"]["logger_name"] == "logister.tests.messages"
+    assert kwargs["context"]["logger"]["function"] == "test_logging_handler_captures_log_records"
+    assert kwargs["context"]["log_record"]["cache"] == "primary"
+
+
+def test_logging_handler_captures_exceptions_from_exc_info() -> None:
+    client = Mock(spec=LogisterClient)
+    handler = LogisterLoggingHandler(client)
+
+    logger = logging.getLogger("logister.tests.exceptions")
+    logger.handlers = []
+    logger.propagate = False
+    logger.setLevel(logging.ERROR)
+    logger.addHandler(handler)
+
+    try:
+        raise RuntimeError("worker exploded")
+    except RuntimeError:
+        logger.exception("Task failed", extra={"request_id": "task-99"})
+
+    client.capture_exception.assert_called_once()
+    _, kwargs = client.capture_exception.call_args
+    assert kwargs["message"] == "Task failed"
+    assert kwargs["request_id"] == "task-99"
+    assert kwargs["context"]["logger_name"] == "logister.tests.exceptions"
+
+
+def test_instrument_logging_attaches_once_per_client() -> None:
+    client = Mock(spec=LogisterClient)
+    logger = logging.getLogger("logister.tests.instrument")
+    logger.handlers = []
+    logger.propagate = True
+
+    first_handler = instrument_logging(client, logger=logger, context={"service": "billing"}, propagate=False)
+    second_handler = instrument_logging(client, logger=logger, context={"service": "billing"}, propagate=False)
+
+    assert first_handler is second_handler
+    assert len(logger.handlers) == 1
+    assert isinstance(first_handler, LogisterLoggingHandler)
+    assert logger.propagate is False
 
 
 @dataclass
@@ -129,6 +212,9 @@ class FakeDjangoRequest:
     path: str
     META: dict[str, str] = field(default_factory=dict)
     resolver_match: SimpleNamespace | None = None
+
+    def build_absolute_uri(self) -> str:
+        return f"https://example.com{self.path}"
 
 
 class FakeFastAPIApp:
@@ -189,6 +275,8 @@ def test_fastapi_instrumentation_captures_transaction() -> None:
     assert kwargs["context"]["framework"] == "fastapi"
     assert kwargs["context"]["path"] == "/health"
     assert kwargs["context"]["status_code"] == 204
+    assert kwargs["context"]["request"]["query_string"] == "full=true"
+    assert kwargs["context"]["request"]["headers"]["X-Request-Id"] == "req-1"
 
 
 def test_fastapi_instrumentation_captures_uncaught_exception() -> None:
@@ -237,6 +325,8 @@ def test_django_middleware_captures_transaction() -> None:
     assert kwargs["context"]["framework"] == "django"
     assert kwargs["context"]["route"] == "orders/create"
     assert kwargs["context"]["status_code"] == 201
+    assert kwargs["context"]["url"] == "https://example.com/orders/create"
+    assert kwargs["context"]["request"]["headers"]["X-Request-Id"] == "req-77"
 
 
 def test_django_middleware_captures_exception() -> None:
@@ -272,6 +362,8 @@ class FakeFlaskRequest:
     remote_addr: str | None = None
     endpoint: str | None = None
     blueprint: str | None = None
+    url: str | None = None
+    view_args: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -293,6 +385,8 @@ def test_flask_instrumentation_captures_transaction() -> None:
         remote_addr="127.0.0.1",
         endpoint="health",
         blueprint="core",
+        url="https://example.com/health?full=true",
+        view_args={"order_id": "42"},
     )
     flask_g = FakeFlaskG()
 
@@ -310,6 +404,8 @@ def test_flask_instrumentation_captures_transaction() -> None:
     assert kwargs["context"]["endpoint"] == "health"
     assert kwargs["context"]["blueprint"] == "core"
     assert kwargs["context"]["status_code"] == 204
+    assert kwargs["context"]["url"] == "https://example.com/health?full=true"
+    assert kwargs["context"]["request"]["view_args"]["order_id"] == "42"
 
 
 def test_flask_instrumentation_captures_exception() -> None:
@@ -356,3 +452,6 @@ def test_celery_instrumentation_wires_signals() -> None:
     assert client.capture_exception.called
     assert client.capture_message.called
     assert client.check_in.called
+    _, kwargs = client.capture_transaction.call_args
+    assert kwargs["context"]["task_module"] == "types"
+    assert kwargs["context"]["queue"] == "billing"

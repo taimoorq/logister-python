@@ -5,6 +5,7 @@ Python SDK for sending errors, logs, metrics, transactions, and check-ins to Log
 This package is the Python entry point for Logister integrations. The first release focuses on:
 
 - a shared `LogisterClient`
+- native Python `logging` integration
 - `FastAPI` request instrumentation
 - `Django` request middleware
 - `Celery` task instrumentation
@@ -57,6 +58,7 @@ pip install 'logister-python[flask]'
 - `LOGISTER_TIMEOUT` (defaults to `5.0`)
 - `LOGISTER_ENVIRONMENT`
 - `LOGISTER_RELEASE`
+- `LOGISTER_CAPTURE_LOCALS` (`true` / `false`, defaults to `false`)
 
 ## Core Client
 
@@ -69,6 +71,28 @@ client.capture_message("Application booted", level="info")
 client.capture_metric("cache.hit_rate", 0.98, context={"cache": "primary"})
 client.capture_transaction("POST /checkout", 182.4, request_id="req_123")
 ```
+
+## Python Logging
+
+```python
+import logging
+
+from logister import LogisterClient, instrument_logging
+
+client = LogisterClient.from_env(default_context={"service": "api"})
+logger = logging.getLogger("checkout")
+
+instrument_logging(client, logger=logger)
+
+logger.warning("Inventory cache miss", extra={"request_id": "req_123", "sku": "sku_42"})
+```
+
+What this records:
+
+- standard Python log records as `log` events
+- `logger.exception(...)` and other records with `exc_info` as `error` events
+- logger metadata like logger name, module, file, function, line number, process, and thread
+- extra record fields passed through `extra={...}` so request IDs, trace IDs, and app-specific details show up in Logister
 
 You can also manage the underlying HTTP client explicitly:
 
@@ -99,6 +123,10 @@ except Exception as exc:
     )
 ```
 
+Captured Python exceptions include structured traceback frames, backtrace text, exception module and qualified class name, chained exceptions from `raise ... from ...`, and runtime metadata like Python version, platform, hostname, and process ID.
+
+Set `LOGISTER_CAPTURE_LOCALS=true` if you want frame locals included in error events for the Logister UI.
+
 ## FastAPI
 
 ```python
@@ -115,7 +143,7 @@ What this records:
 
 - request duration as a `transaction`
 - uncaught request exceptions as an `error`
-- request metadata like method, path, status code, client IP, query string, `x-request-id`, and `x-trace-id`
+- request metadata like method, path, route, full URL, selected headers, client IP, path params, query string, `x-request-id`, and `x-trace-id`
 
 You can customize transaction naming:
 
@@ -150,6 +178,7 @@ What this records:
 - task failures as an `error`
 - task retries as a warning `log`
 - optional task-level `check_in` events when you provide `monitor_slug_factory`
+- task metadata like queue, module, retry count, ETA, and worker hostname when Celery exposes it
 
 ## Django
 
@@ -177,7 +206,7 @@ What Django middleware records:
 
 - request duration as a `transaction`
 - uncaught view exceptions via `process_exception()` as an `error`
-- request metadata like method, path, route, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
+- request metadata like method, path, route, full URL, selected headers, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
 
 ## Flask
 
@@ -195,7 +224,7 @@ What Flask instrumentation records:
 
 - request duration as a `transaction`
 - uncaught request exceptions as an `error`
-- request metadata like method, path, endpoint, blueprint, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
+- request metadata like method, path, full URL, endpoint, blueprint, selected headers, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
 
 ## Check-ins
 

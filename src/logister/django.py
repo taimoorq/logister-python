@@ -79,22 +79,41 @@ def _transaction_name(request: Any, transaction_namer: TransactionNamer | None) 
 
 
 def _request_context(request: Any, *, status_code: int | None) -> dict[str, Any]:
+    headers = _request_headers(request)
+    query_string = _meta(request).get("QUERY_STRING")
+    client_ip = _meta(request).get("REMOTE_ADDR")
+    route = getattr(getattr(request, "resolver_match", None), "route", None)
+    url = None
+    build_absolute_uri = getattr(request, "build_absolute_uri", None)
+    if callable(build_absolute_uri):
+        try:
+            url = build_absolute_uri()
+        except Exception:
+            url = None
+
     context = {
         "framework": "django",
         "method": getattr(request, "method", "GET"),
         "path": getattr(request, "path", "/"),
         "status_code": status_code,
+        "url": url,
+        "request": {
+            "method": getattr(request, "method", "GET"),
+            "path": getattr(request, "path", "/"),
+            "url": url,
+            "headers": headers,
+            "query_string": query_string or None,
+            "route": route,
+        },
     }
 
-    query_string = _meta(request).get("QUERY_STRING")
     if query_string:
         context["query_string"] = query_string
 
-    client_ip = _meta(request).get("REMOTE_ADDR")
     if client_ip:
         context["client_ip"] = client_ip
+        context["request"]["client_ip"] = client_ip
 
-    route = getattr(getattr(request, "resolver_match", None), "route", None)
     if route:
         context["route"] = route
 
@@ -113,3 +132,20 @@ def _header(request: Any, key: str) -> str | None:
 
 def _request_id(request: Any) -> str | None:
     return _header(request, "HTTP_X_REQUEST_ID") or _header(request, "REQUEST_ID")
+
+
+def _request_headers(request: Any) -> dict[str, str]:
+    allowed = {
+        "HTTP_USER_AGENT": "User-Agent",
+        "HTTP_ACCEPT": "Accept",
+        "HTTP_HOST": "Host",
+        "HTTP_REFERER": "Referer",
+        "HTTP_X_FORWARDED_FOR": "X-Forwarded-For",
+        "HTTP_X_REQUEST_ID": "X-Request-Id",
+        "HTTP_X_TRACE_ID": "X-Trace-Id",
+    }
+    return {
+        header_name: value
+        for meta_key, header_name in allowed.items()
+        if isinstance((value := _meta(request).get(meta_key)), str) and value.strip()
+    }

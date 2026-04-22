@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import os
+import platform
+import socket
+import sys
 import traceback as traceback_module
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from os import getpid
 from typing import Any, Mapping
 
 import httpx
@@ -21,6 +25,7 @@ class LogisterClient:
     environment: str | None = None
     release: str | None = None
     default_context: Mapping[str, Any] | None = None
+    capture_locals: bool = False
     user_agent: str = "logister-python/0.1.0"
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
 
@@ -33,6 +38,7 @@ class LogisterClient:
         timeout_var: str = "LOGISTER_TIMEOUT",
         environment_var: str = "LOGISTER_ENVIRONMENT",
         release_var: str = "LOGISTER_RELEASE",
+        capture_locals_var: str = "LOGISTER_CAPTURE_LOCALS",
         default_context: Mapping[str, Any] | None = None,
     ) -> "LogisterClient":
         api_key = os.getenv(api_key_var, "").strip()
@@ -41,6 +47,7 @@ class LogisterClient:
 
         timeout_value = os.getenv(timeout_var, "").strip()
         timeout = float(timeout_value) if timeout_value else 5.0
+        capture_locals = _env_bool(os.getenv(capture_locals_var, ""))
 
         return cls(
             api_key=api_key,
@@ -49,6 +56,7 @@ class LogisterClient:
             environment=os.getenv(environment_var, "").strip() or None,
             release=os.getenv(release_var, "").strip() or None,
             default_context=default_context,
+            capture_locals=capture_locals,
         )
 
     def capture_exception(
@@ -277,30 +285,82 @@ class LogisterClient:
     def _exception_payload(self, error: BaseException) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "class": error.__class__.__name__,
+            "qualified_class": f"{error.__class__.__module__}.{error.__class__.__qualname__}",
+            "module": error.__class__.__module__,
             "message": str(error),
         }
 
         if error.__traceback__ is None:
             return payload
 
-        extracted_frames = traceback_module.extract_tb(error.__traceback__)
-        if not extracted_frames:
-            return payload
+        frames, backtrace = self._traceback_frames(error.__traceback__)
+        if frames:
+            payload["frames"] = frames
+        if backtrace:
+            payload["backtrace"] = backtrace
 
-        payload["frames"] = [
-            {
-                "filename": frame.filename,
-                "lineno": frame.lineno,
-                "name": frame.name,
-                "line": frame.line,
-            }
-            for frame in extracted_frames
-        ]
-        payload["backtrace"] = [
-            f'File "{frame.filename}", line {frame.lineno}, in {frame.name}'
-            for frame in extracted_frames
-        ]
+        cause = self._nested_exception_payload(error.__cause__)
+        if cause:
+            payload["cause"] = cause
+
+        context = self._nested_exception_payload(error.__context__)
+        if context and error.__context__ is not error.__cause__ and not getattr(error, "__suppress_context__", False):
+            payload["context"] = context
+
         return payload
+
+    def _nested_exception_payload(self, error: BaseException | None, *, depth: int = 0) -> dict[str, Any] | None:
+        if error is None or depth >= 3:
+            return None
+
+        payload: dict[str, Any] = {
+            "class": error.__class__.__name__,
+            "qualified_class": f"{error.__class__.__module__}.{error.__class__.__qualname__}",
+            "module": error.__class__.__module__,
+            "message": str(error),
+        }
+
+        if error.__traceback__ is not None:
+            frames, backtrace = self._traceback_frames(error.__traceback__)
+            if frames:
+                payload["frames"] = frames
+            if backtrace:
+                payload["backtrace"] = backtrace
+
+        cause = self._nested_exception_payload(error.__cause__, depth=depth + 1)
+        if cause:
+            payload["cause"] = cause
+
+        context = self._nested_exception_payload(error.__context__, depth=depth + 1)
+        if context and error.__context__ is not error.__cause__ and not getattr(error, "__suppress_context__", False):
+            payload["context"] = context
+
+        return payload
+
+    def _traceback_frames(self, tb: Any) -> tuple[list[dict[str, Any]], list[str]]:
+        frames: list[dict[str, Any]] = []
+        backtrace: list[str] = []
+
+        current = tb
+        while current is not None:
+            frame = current.tb_frame
+            frame_payload: dict[str, Any] = {
+                "filename": frame.f_code.co_filename,
+                "lineno": current.tb_lineno,
+                "name": frame.f_code.co_name,
+                "line": traceback_module.extract_tb(current, limit=1)[0].line,
+            }
+            if self.capture_locals:
+                serialized_locals = _serialize_locals(frame.f_locals)
+                if serialized_locals:
+                    frame_payload["locals"] = serialized_locals
+            frames.append(frame_payload)
+            backtrace.append(
+                f'File "{frame_payload["filename"]}", line {frame_payload["lineno"]}, in {frame_payload["name"]}'
+            )
+            current = current.tb_next
+
+        return frames, backtrace
 
     def __enter__(self) -> "LogisterClient":
         return self
@@ -360,6 +420,13 @@ class LogisterClient:
         self._set_if_missing(merged, "request_id", request_id)
         self._set_if_missing(merged, "session_id", session_id)
         self._set_if_missing(merged, "user_id", user_id)
+        self._set_if_missing(merged, "runtime", "python")
+        self._set_if_missing(merged, "python_version", platform.python_version())
+        self._set_if_missing(merged, "python_implementation", platform.python_implementation())
+        self._set_if_missing(merged, "platform", platform.platform())
+        self._set_if_missing(merged, "hostname", socket.gethostname())
+        self._set_if_missing(merged, "process_id", getpid())
+        self._set_if_missing(merged, "runtime_name", sys.executable)
         self._set_if_missing(merged, "transaction_name", transaction_name)
         self._set_if_missing(merged, "duration_ms", duration_ms)
         self._set_if_missing(merged, "expected_interval_seconds", expected_interval_seconds)
@@ -383,3 +450,25 @@ class LogisterClient:
         if payload.get(key) is not None:
             return
         payload[key] = value
+
+
+def _env_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_repr(value: Any, *, max_length: int = 200) -> str:
+    try:
+        rendered = repr(value)
+    except Exception:
+        rendered = object.__repr__(value)
+    if len(rendered) > max_length:
+        return f"{rendered[:max_length - 3]}..."
+    return rendered
+
+
+def _serialize_locals(values: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        str(key): _safe_repr(value)
+        for key, value in values.items()
+        if not str(key).startswith("__")
+    }
