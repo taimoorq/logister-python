@@ -8,6 +8,7 @@ This package is the Python entry point for Logister integrations. The first rele
 - `FastAPI` request instrumentation
 - `Django` request middleware
 - `Celery` task instrumentation
+- `Flask` request instrumentation
 
 Supports Python 3.11 and newer.
 
@@ -39,6 +40,12 @@ Django support:
 
 ```bash
 pip install 'logister-python[django]'
+```
+
+Flask support:
+
+```bash
+pip install 'logister-python[flask]'
 ```
 
 ## Environment Variables
@@ -172,6 +179,24 @@ What Django middleware records:
 - uncaught view exceptions via `process_exception()` as an `error`
 - request metadata like method, path, route, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
 
+## Flask
+
+```python
+from flask import Flask
+
+from logister import LogisterClient, instrument_flask
+
+app = Flask(__name__)
+logister = LogisterClient.from_env(default_context={"service": "flask-web"})
+instrument_flask(app, logister)
+```
+
+What Flask instrumentation records:
+
+- request duration as a `transaction`
+- uncaught request exceptions as an `error`
+- request metadata like method, path, endpoint, blueprint, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
+
 ## Check-ins
 
 ```python
@@ -194,12 +219,6 @@ client.check_in(
 - app log / warning -> `log`
 - custom counters / measurements -> `metric`
 - scheduled job heartbeat -> `check_in`
-
-## Roadmap
-
-Next framework targets:
-
-- `Flask`
 
 ## Publishing
 

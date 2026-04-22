@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from logister import LogisterClient, LogisterMiddleware, build_django_middleware, instrument_celery, instrument_fastapi
+from logister import LogisterClient, LogisterMiddleware, build_django_middleware, instrument_celery, instrument_fastapi, instrument_flask
 
 
 def test_send_event_wraps_payload_and_sets_auth_header() -> None:
@@ -144,6 +144,26 @@ class FakeFastAPIApp:
         return decorator
 
 
+class FakeFlaskApp:
+    def __init__(self) -> None:
+        self.extensions: dict[str, object] = {}
+        self.before_request_funcs: list[object] = []
+        self.after_request_funcs: list[object] = []
+        self.teardown_request_funcs: list[object] = []
+
+    def before_request(self, fn):
+        self.before_request_funcs.append(fn)
+        return fn
+
+    def after_request(self, fn):
+        self.after_request_funcs.append(fn)
+        return fn
+
+    def teardown_request(self, fn):
+        self.teardown_request_funcs.append(fn)
+        return fn
+
+
 def test_fastapi_instrumentation_captures_transaction() -> None:
     app = FakeFastAPIApp()
     client = Mock(spec=LogisterClient)
@@ -241,6 +261,69 @@ def test_build_django_middleware_binds_client() -> None:
     middleware(request)
 
     client.capture_transaction.assert_called_once()
+
+
+@dataclass
+class FakeFlaskRequest:
+    method: str
+    path: str
+    headers: dict[str, str] = field(default_factory=dict)
+    query_string: bytes = b""
+    remote_addr: str | None = None
+    endpoint: str | None = None
+    blueprint: str | None = None
+
+
+@dataclass
+class FakeFlaskG:
+    _logister_started_at: float | None = None
+    _logister_transaction_name: str | None = None
+    _logister_transaction_recorded: bool = False
+    _logister_exception_reported: bool = False
+
+
+def test_flask_instrumentation_captures_transaction() -> None:
+    app = FakeFlaskApp()
+    client = Mock(spec=LogisterClient)
+    flask_request = FakeFlaskRequest(
+        method="GET",
+        path="/health",
+        headers={"X-Request-Id": "req-88", "X-Trace-Id": "trace-88"},
+        query_string=b"full=true",
+        remote_addr="127.0.0.1",
+        endpoint="health",
+        blueprint="core",
+    )
+    flask_g = FakeFlaskG()
+
+    with patch("logister.flask._flask_state", return_value=(flask_g, flask_request)):
+        instrument_flask(app, client)
+        app.before_request_funcs[0]()
+        response = app.after_request_funcs[0](FakeResponse(status_code=204))
+
+    assert response.status_code == 204
+    client.capture_transaction.assert_called_once()
+    _, kwargs = client.capture_transaction.call_args
+    assert kwargs["request_id"] == "req-88"
+    assert kwargs["trace_id"] == "trace-88"
+    assert kwargs["context"]["framework"] == "flask"
+    assert kwargs["context"]["endpoint"] == "health"
+    assert kwargs["context"]["blueprint"] == "core"
+    assert kwargs["context"]["status_code"] == 204
+
+
+def test_flask_instrumentation_captures_exception() -> None:
+    app = FakeFlaskApp()
+    client = Mock(spec=LogisterClient)
+    flask_request = FakeFlaskRequest(method="POST", path="/checkout", remote_addr="127.0.0.1")
+    flask_g = FakeFlaskG(_logister_started_at=0.0, _logister_transaction_name="POST /checkout")
+
+    with patch("logister.flask._flask_state", return_value=(flask_g, flask_request)):
+        instrument_flask(app, client)
+        app.teardown_request_funcs[0](RuntimeError("boom"))
+
+    client.capture_transaction.assert_called_once()
+    client.capture_exception.assert_called_once()
 
 
 class FakeSignal:
