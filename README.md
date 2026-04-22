@@ -2,7 +2,7 @@
 
 Python SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.
 
-This package is the Python entry point for Logister integrations. The first release focuses on:
+This package is aimed at Python teams running APIs, workers, schedulers, and internal services. The current focus is the set of places Python teams usually need first:
 
 - a shared `LogisterClient`
 - native Python `logging` integration
@@ -62,6 +62,8 @@ pip install 'logister-python[flask]'
 
 ## Core Client
 
+Use the shared client when you are wiring a script, worker, CLI task, or framework hook and want one place to send custom events.
+
 ```python
 from logister import LogisterClient
 
@@ -73,6 +75,8 @@ client.capture_transaction("POST /checkout", 182.4, request_id="req_123")
 ```
 
 ## Python Logging
+
+If your app already uses the standard library `logging` module, this is usually the easiest way to start sending application logs into Logister without rewriting call sites.
 
 ```python
 import logging
@@ -105,6 +109,8 @@ with LogisterClient.from_env() as client:
 
 ## Error Capture
 
+Python error reports are most useful when you include the service or component name and let the SDK send the traceback structure for you.
+
 ```python
 from logister import LogisterClient
 
@@ -128,6 +134,8 @@ Captured Python exceptions include structured traceback frames, backtrace text, 
 Set `LOGISTER_CAPTURE_LOCALS=true` if you want frame locals included in error events for the Logister UI.
 
 ## FastAPI
+
+This is the cleanest path for modern Python API services.
 
 ```python
 from fastapi import FastAPI
@@ -157,6 +165,8 @@ instrument_fastapi(
 
 ## Celery
 
+This is the worker-side path when your Python app does meaningful work outside the request cycle.
+
 ```python
 from celery import Celery
 
@@ -181,6 +191,8 @@ What this records:
 - task metadata like queue, module, retry count, ETA, and worker hostname when Celery exposes it
 
 ## Django
+
+Use middleware when you want a Django app to report request timing and uncaught view exceptions with very little setup.
 
 Use the built-in middleware directly when env-based configuration is enough:
 
@@ -210,6 +222,8 @@ What Django middleware records:
 
 ## Flask
 
+Use the Flask hooks when you want lightweight request instrumentation without changing your route code.
+
 ```python
 from flask import Flask
 
@@ -227,6 +241,8 @@ What Flask instrumentation records:
 - request metadata like method, path, full URL, endpoint, blueprint, selected headers, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
 
 ## Check-ins
+
+Check-ins are a good fit for scheduled jobs, cron-style imports, and the “did this worker actually run?” questions Python teams usually end up debugging.
 
 ```python
 from logister import LogisterClient
