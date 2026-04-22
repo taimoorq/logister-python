@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import traceback as traceback_module
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -68,10 +69,7 @@ class LogisterClient:
         error_context = dict(context or {})
         error_context.setdefault(
             "exception",
-            {
-                "class": error.__class__.__name__,
-                "message": str(error),
-            },
+            self._exception_payload(error),
         )
         return self.send_event(
             event_type="error",
@@ -275,6 +273,34 @@ class LogisterClient:
         if self._http_client is not None:
             self._http_client.close()
             self._http_client = None
+
+    def _exception_payload(self, error: BaseException) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "class": error.__class__.__name__,
+            "message": str(error),
+        }
+
+        if error.__traceback__ is None:
+            return payload
+
+        extracted_frames = traceback_module.extract_tb(error.__traceback__)
+        if not extracted_frames:
+            return payload
+
+        payload["frames"] = [
+            {
+                "filename": frame.filename,
+                "lineno": frame.lineno,
+                "name": frame.name,
+                "line": frame.line,
+            }
+            for frame in extracted_frames
+        ]
+        payload["backtrace"] = [
+            f'File "{frame.filename}", line {frame.lineno}, in {frame.name}'
+            for frame in extracted_frames
+        ]
+        return payload
 
     def __enter__(self) -> "LogisterClient":
         return self

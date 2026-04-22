@@ -80,6 +80,30 @@ def test_from_env_builds_client(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.default_context == {"service": "billing"}
 
 
+def test_capture_exception_includes_python_traceback_frames() -> None:
+    client = LogisterClient(api_key="test-token", base_url="https://logister.example")
+    response = Mock()
+    response.json.return_value = {"status": "accepted"}
+    response.raise_for_status.return_value = None
+
+    with patch("logister.client.httpx.Client", autospec=True) as client_class:
+        client_instance = client_class.return_value
+        client_instance.post.return_value = response
+
+        try:
+            raise ValueError("broken checkout")
+        except ValueError as exc:
+            client.capture_exception(exc)
+
+    _, kwargs = client_instance.post.call_args
+    exception = kwargs["json"]["event"]["context"]["exception"]
+    assert exception["class"] == "ValueError"
+    assert exception["message"] == "broken checkout"
+    assert exception["frames"]
+    assert exception["backtrace"]
+    assert exception["frames"][-1]["name"] == "test_capture_exception_includes_python_traceback_frames"
+
+
 @dataclass
 class FakeURL:
     path: str
