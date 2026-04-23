@@ -2,6 +2,8 @@
 
 Python SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.
 
+Install it from PyPI as `logister-python`.
+
 This package is aimed at Python teams running APIs, workers, schedulers, and internal services. The current focus is the set of places Python teams usually need first:
 
 - a shared `LogisterClient`
@@ -16,13 +18,29 @@ Supports Python 3.11 and newer.
 - Main Logister app: https://github.com/taimoorq/logister
 - Product docs: https://docs.logister.org/
 - Python integration docs: https://docs.logister.org/integrations/python/
+- PyPI package: https://pypi.org/project/logister-python/
 
-## Install
+## What This Package Is For
+
+Use `logister-python` when you want a Python service to send operational telemetry into Logister through the published PyPI package instead of wiring raw HTTP calls by hand.
+
+- API and web apps: FastAPI, Django, Flask
+- Worker and scheduler processes: Celery, cron-style jobs, CLI tasks
+- Standard-library logging pipelines: `logging` to Logister events
+- Shared custom instrumentation: errors, logs, metrics, transactions, and check-ins
+
+## Install From PyPI
 
 Core client:
 
 ```bash
 pip install logister-python
+```
+
+With `uv`:
+
+```bash
+uv add logister-python
 ```
 
 FastAPI support:
@@ -48,6 +66,8 @@ Flask support:
 ```bash
 pip install 'logister-python[flask]'
 ```
+
+Package index: https://pypi.org/project/logister-python/
 
 ## Environment Variables
 
