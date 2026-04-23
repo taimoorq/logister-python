@@ -20,6 +20,23 @@ Supports Python 3.11 and newer.
 - Python integration docs: https://docs.logister.org/integrations/python/
 - PyPI package: https://pypi.org/project/logister-python/
 
+## Table Of Contents
+
+- [What This Package Is For](#what-this-package-is-for)
+- [Install From PyPI](#install-from-pypi)
+- [Environment Variables](#environment-variables)
+- [Core Client](#core-client)
+- [Python Logging](#python-logging)
+- [Error Capture](#error-capture)
+- [FastAPI](#fastapi)
+- [Celery](#celery)
+- [Django](#django)
+- [Flask](#flask)
+- [Check-ins](#check-ins)
+- [Event Mapping](#event-mapping)
+- [Publishing](#publishing)
+- [Release Flow](#release-flow)
+
 ## What This Package Is For
 
 Use `logister-python` when you want a Python service to send operational telemetry into Logister through the published PyPI package instead of wiring raw HTTP calls by hand.
