@@ -107,7 +107,14 @@ from logister import LogisterClient
 client = LogisterClient.from_env(default_context={"service": "api"})
 
 client.capture_message("Application booted", level="info")
-client.capture_metric("cache.hit_rate", 0.98, context={"cache": "primary"})
+client.capture_metric(
+    "cache.hit_rate",
+    0.98,
+    unit="ratio",
+    level="info",
+    fingerprint="metric:cache.hit_rate",
+    context={"cache": "primary"},
+)
 client.capture_transaction("POST /checkout", 182.4, request_id="req_123")
 ```
 
@@ -289,8 +296,11 @@ client = LogisterClient.from_env(default_context={"service": "scheduler"})
 client.check_in(
     "nightly-import",
     "ok",
+    release="worker@2026.05.21",
     expected_interval_seconds=3600,
     duration_ms=842.7,
+    trace_id="trace-123",
+    request_id="req-123",
 )
 ```
 
@@ -304,9 +314,9 @@ client.check_in(
 
 ## Publishing
 
-This package is intended to publish to PyPI with Trusted Publishing from GitHub Actions.
+This package is intended to publish to PyPI with Trusted Publishing from GitHub Actions. A commit or merge to `main` runs CI only; publishing requires a version tag.
 
-- Push a tag like `v0.2.0`
+- Push a tag like `v0.2.1`
 - GitHub Actions builds the distributions
 - PyPI Trusted Publishing handles the upload with OIDC
 

@@ -73,6 +73,40 @@ def test_check_in_uses_check_in_root_payload() -> None:
     client_class.assert_called_once()
 
 
+def test_capture_metric_accepts_unit_level_and_fingerprint() -> None:
+    client = LogisterClient(api_key="test-token", environment="production", release="2026.04.22")
+    response = Mock()
+    response.json.return_value = {"status": "accepted"}
+    response.raise_for_status.return_value = None
+
+    with patch("logister.client.httpx.Client", autospec=True) as client_class:
+        client_instance = client_class.return_value
+        client_instance.post.return_value = response
+
+        client.capture_metric(
+            "queue.depth",
+            12,
+            unit="jobs",
+            level="warn",
+            fingerprint="metric:queue.depth",
+            trace_id="trace-123",
+            request_id="req-123",
+        )
+
+    _, kwargs = client_instance.post.call_args
+    event = kwargs["json"]["event"]
+    assert event["event_type"] == "metric"
+    assert event["level"] == "warn"
+    assert event["fingerprint"] == "metric:queue.depth"
+    assert event["context"]["metric"] == {"name": "queue.depth", "value": 12, "unit": "jobs"}
+    assert event["context"]["value"] == 12
+    assert event["context"]["unit"] == "jobs"
+    assert event["context"]["environment"] == "production"
+    assert event["context"]["release"] == "2026.04.22"
+    assert event["context"]["trace_id"] == "trace-123"
+    assert event["context"]["request_id"] == "req-123"
+
+
 def test_from_env_builds_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGISTER_API_KEY", "env-token")
     monkeypatch.setenv("LOGISTER_BASE_URL", "https://logs.example")

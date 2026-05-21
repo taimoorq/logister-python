@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.2.1 - 2026-05-21
+
+- Added `unit`, `level`, and `fingerprint` options to `capture_metric`.
+- Added top-level metric value/unit context while preserving the existing structured metric payload.
+
 ## v0.2.0 - 2026-04-22
 
 - Added Flask request instrumentation alongside the existing FastAPI, Django, and Celery integrations.

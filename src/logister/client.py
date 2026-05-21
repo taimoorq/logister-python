@@ -26,7 +26,7 @@ class LogisterClient:
     release: str | None = None
     default_context: Mapping[str, Any] | None = None
     capture_locals: bool = False
-    user_agent: str = "logister-python/0.2.0"
+    user_agent: str = "logister-python/0.2.1"
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
 
     @classmethod
@@ -129,7 +129,10 @@ class LogisterClient:
         name: str,
         value: float | int,
         *,
+        level: str = "info",
+        unit: str | None = None,
         context: Mapping[str, Any] | None = None,
+        fingerprint: str | None = None,
         occurred_at: str | datetime | None = None,
         environment: str | None = None,
         release: str | None = None,
@@ -139,12 +142,19 @@ class LogisterClient:
         user_id: str | None = None,
     ) -> dict[str, Any]:
         metric_context = dict(context or {})
-        metric_context.setdefault("metric", {"name": name, "value": value})
+        metric_payload: dict[str, Any] = {"name": name, "value": value}
+        if unit:
+            metric_payload["unit"] = unit
+        metric_context.setdefault("metric", metric_payload)
+        metric_context.setdefault("value", value)
+        if unit:
+            metric_context.setdefault("unit", unit)
         return self.send_event(
             event_type="metric",
-            level="info",
+            level=level,
             message=name,
             context=metric_context,
+            fingerprint=fingerprint,
             occurred_at=occurred_at,
             environment=environment,
             release=release,
