@@ -24,6 +24,7 @@ Supports Python 3.11 and newer.
 ## Table Of Contents
 
 - [What This Package Is For](#what-this-package-is-for)
+- [Package Links](#package-links)
 - [Install From PyPI](#install-from-pypi)
 - [Environment Variables](#environment-variables)
 - [Core Client](#core-client)
@@ -47,6 +48,13 @@ Use `logister-python` when you want a Python service to send operational telemet
 - Worker and scheduler processes: Celery, cron-style jobs, CLI tasks
 - Standard-library logging pipelines: `logging` to Logister events
 - Shared custom instrumentation: errors, logs, metrics, transactions, and check-ins
+
+## Package Links
+
+- PyPI package: https://pypi.org/project/logister-python/
+- GitHub releases: https://github.com/taimoorq/logister-python/releases
+- Source repository: https://github.com/taimoorq/logister-python
+- Integration docs: https://docs.logister.org/integrations/python/
 
 ## Install From PyPI
 
