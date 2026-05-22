@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.2.2 - 2026-05-22
+
+- Added README guidance for using Python reports with the Logister project Insights beta, including practical metric, transaction, log, check-in, and custom attribute examples.
+
 ## v0.2.1 - 2026-05-21
 
 - Added `unit`, `level`, and `fingerprint` options to `capture_metric`.

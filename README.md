@@ -17,6 +17,7 @@ Supports Python 3.11 and newer.
 
 - Main Logister app: https://github.com/taimoorq/logister
 - Product docs: https://docs.logister.org/
+- Insights beta guide: https://docs.logister.org/product/#insights-beta
 - Python integration docs: https://docs.logister.org/integrations/python/
 - PyPI package: https://pypi.org/project/logister-python/
 
@@ -33,6 +34,7 @@ Supports Python 3.11 and newer.
 - [Django](#django)
 - [Flask](#flask)
 - [Check-ins](#check-ins)
+- [Using project Insights beta](#using-project-insights-beta)
 - [Event Mapping](#event-mapping)
 - [Publishing](#publishing)
 - [Release Flow](#release-flow)
@@ -304,6 +306,75 @@ client.check_in(
 )
 ```
 
+## Using project Insights beta
+
+The Logister project Insights tab combines Inbox, Activity, and Performance data into live dashboard views. Python services get the most useful Insights view when they send consistent `LOGISTER_ENVIRONMENT`, `LOGISTER_RELEASE`, and stable top-level context attributes.
+
+Use `default_context` for attributes that should be present on most events, and pass per-event context for route, queue, worker, or feature dimensions:
+
+```python
+from logister import LogisterClient
+
+client = LogisterClient.from_env(
+    default_context={
+        "service": "billing-api",
+        "region": "us-east-1",
+    }
+)
+
+client.capture_metric(
+    "queue.depth",
+    42,
+    unit="jobs",
+    context={
+        "service": "billing-worker",
+        "queue": "billing",
+        "tenant_tier": "enterprise",
+    },
+)
+
+client.capture_transaction(
+    "POST /checkout",
+    182.4,
+    context={
+        "route": "POST /checkout",
+        "feature_flag": "new_checkout",
+        "tenant_tier": "enterprise",
+    },
+    request_id="req_123",
+)
+
+client.capture_message(
+    "payment provider retry",
+    level="warn",
+    context={
+        "service": "billing-worker",
+        "provider": "stripe",
+        "queue": "billing",
+    },
+)
+
+client.check_in(
+    "nightly-reconcile",
+    "ok",
+    expected_interval_seconds=3600,
+    duration_ms=842.7,
+    context={
+        "service": "billing-worker",
+        "queue": "reconcile",
+    },
+)
+```
+
+Practical Insights recipes:
+
+- Release validation: set `LOGISTER_RELEASE`, then filter Insights to the new release and compare error count, transaction P95, and custom metrics.
+- Worker monitoring: report metrics such as `queue.depth`, `queue.latency`, `task.retry_count`, or `celery.active_tasks` with stable `queue` and `service` context keys.
+- Performance triage: let FastAPI, Django, or Flask instrumentation send request transactions, then add route-level logs and metrics with matching `route` values.
+- Instrumentation audit: open Insights after deploy and confirm errors, logs, metrics, transactions, and check-ins all appear in the recent stream.
+
+Keep custom attributes stable and low-cardinality. Good top-level context keys include `service`, `region`, `queue`, `route`, `tenant_tier`, `provider`, and `feature_flag`. Avoid raw IDs, emails, request bodies, SQL text, and per-user values as Insights dimensions.
+
 ## Event Mapping
 
 - web request duration -> `transaction`
@@ -316,7 +387,7 @@ client.check_in(
 
 This package is intended to publish to PyPI with Trusted Publishing from GitHub Actions. A commit or merge to `main` runs CI only; publishing requires a version tag.
 
-- Push a tag like `v0.2.1`
+- Push a tag like `v0.2.2`
 - GitHub Actions builds the distributions
 - PyPI Trusted Publishing handles the upload with OIDC
 
