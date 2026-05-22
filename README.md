@@ -421,7 +421,7 @@ Keep custom attributes stable and low-cardinality. Good top-level context keys i
 
 This package is intended to publish to PyPI with Trusted Publishing from GitHub Actions. A commit or merge to `main` runs CI only; publishing requires a version tag.
 
-- Push a tag like `v0.2.2`
+- Push a tag like `v0.2.3`
 - GitHub Actions builds the distributions
 - PyPI Trusted Publishing handles the upload with OIDC
 
