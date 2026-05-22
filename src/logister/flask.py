@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Callable
 
@@ -13,6 +14,7 @@ def instrument_flask(
     client: LogisterClient,
     *,
     transaction_namer: TransactionNamer | None = None,
+    capture_spans: bool = False,
 ) -> Any:
     extensions = getattr(app, "extensions", None)
     if extensions is None:
@@ -26,6 +28,7 @@ def instrument_flask(
     def logister_before_request() -> None:
         g, request = _flask_state()
         g._logister_started_at = perf_counter()
+        g._logister_started_at_wall = datetime.now(UTC)
         g._logister_transaction_name = _transaction_name(request, transaction_namer)
         g._logister_transaction_recorded = False
         g._logister_exception_reported = False
@@ -35,13 +38,27 @@ def instrument_flask(
         g, request = _flask_state()
         started_at = getattr(g, "_logister_started_at", None)
         duration_ms = _duration_ms(started_at)
+        status_code = getattr(response, "status_code", None)
+        context = _request_context(request, status_code=status_code)
         client.capture_transaction(
             getattr(g, "_logister_transaction_name", _transaction_name(request, transaction_namer)),
             duration_ms,
-            context=_request_context(request, status_code=getattr(response, "status_code", None)),
+            context=context,
             trace_id=_header(request, "X-Trace-Id"),
             request_id=_header(request, "X-Request-Id"),
         )
+        if capture_spans:
+            client.capture_span(
+                getattr(g, "_logister_transaction_name", _transaction_name(request, transaction_namer)),
+                duration_ms,
+                context=context,
+                trace_id=_header(request, "X-Trace-Id") or _header(request, "X-Request-Id"),
+                request_id=_header(request, "X-Request-Id"),
+                kind="server",
+                status="error" if status_code and status_code >= 500 else "ok",
+                started_at=getattr(g, "_logister_started_at_wall", None),
+                ended_at=datetime.now(UTC),
+            )
         g._logister_transaction_recorded = True
         return response
 
@@ -52,13 +69,27 @@ def instrument_flask(
 
         g, request = _flask_state()
         if not getattr(g, "_logister_transaction_recorded", False):
+            context = _request_context(request, status_code=500)
+            duration_ms = _duration_ms(getattr(g, "_logister_started_at", None))
             client.capture_transaction(
                 getattr(g, "_logister_transaction_name", _transaction_name(request, transaction_namer)),
-                _duration_ms(getattr(g, "_logister_started_at", None)),
-                context=_request_context(request, status_code=500),
+                duration_ms,
+                context=context,
                 trace_id=_header(request, "X-Trace-Id"),
                 request_id=_header(request, "X-Request-Id"),
             )
+            if capture_spans:
+                client.capture_span(
+                    getattr(g, "_logister_transaction_name", _transaction_name(request, transaction_namer)),
+                    duration_ms,
+                    context=context,
+                    trace_id=_header(request, "X-Trace-Id") or _header(request, "X-Request-Id"),
+                    request_id=_header(request, "X-Request-Id"),
+                    kind="server",
+                    status="error",
+                    started_at=getattr(g, "_logister_started_at_wall", None),
+                    ended_at=datetime.now(UTC),
+                )
             g._logister_transaction_recorded = True
 
         if getattr(g, "_logister_exception_reported", False):

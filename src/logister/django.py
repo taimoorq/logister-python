@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Callable
 
@@ -15,30 +16,48 @@ class LogisterMiddleware:
         *,
         client: LogisterClient | None = None,
         transaction_namer: TransactionNamer | None = None,
+        capture_spans: bool = False,
     ) -> None:
         self.get_response = get_response
         self.client = client or LogisterClient.from_env()
         self.transaction_namer = transaction_namer
+        self.capture_spans = capture_spans
 
     def __call__(self, request: Any) -> Any:
         started_at = perf_counter()
         request._logister_started_at = started_at
+        request._logister_started_at_wall = datetime.now(UTC)
         request._logister_transaction_name = _transaction_name(request, self.transaction_namer)
 
         response = self.get_response(request)
 
         duration_ms = (perf_counter() - started_at) * 1000.0
+        status_code = getattr(response, "status_code", None)
+        context = _request_context(request, status_code=status_code)
         self.client.capture_transaction(
             request._logister_transaction_name,
             duration_ms,
-            context=_request_context(request, status_code=getattr(response, "status_code", None)),
+            context=context,
             trace_id=_header(request, "HTTP_X_TRACE_ID"),
             request_id=_request_id(request),
         )
+        if self.capture_spans:
+            self.client.capture_span(
+                request._logister_transaction_name,
+                duration_ms,
+                context=context,
+                trace_id=_header(request, "HTTP_X_TRACE_ID") or _request_id(request),
+                request_id=_request_id(request),
+                kind="server",
+                status="error" if status_code and status_code >= 500 else "ok",
+                started_at=request._logister_started_at_wall,
+                ended_at=datetime.now(UTC),
+            )
         return response
 
     def process_exception(self, request: Any, exception: BaseException) -> None:
         started_at = getattr(request, "_logister_started_at", None)
+        started_wall = getattr(request, "_logister_started_at_wall", None)
         transaction_name = getattr(request, "_logister_transaction_name", _transaction_name(request, self.transaction_namer))
         duration_ms = (perf_counter() - started_at) * 1000.0 if started_at is not None else 0.0
         context = _request_context(request, status_code=500)
@@ -50,6 +69,18 @@ class LogisterMiddleware:
             trace_id=_header(request, "HTTP_X_TRACE_ID"),
             request_id=_request_id(request),
         )
+        if self.capture_spans:
+            self.client.capture_span(
+                transaction_name,
+                duration_ms,
+                context=context,
+                trace_id=_header(request, "HTTP_X_TRACE_ID") or _request_id(request),
+                request_id=_request_id(request),
+                kind="server",
+                status="error",
+                started_at=started_wall,
+                ended_at=datetime.now(UTC),
+            )
         self.client.capture_exception(
             exception,
             context=context,
@@ -63,10 +94,16 @@ def build_django_middleware(
     client: LogisterClient,
     *,
     transaction_namer: TransactionNamer | None = None,
+    capture_spans: bool = False,
 ) -> type[LogisterMiddleware]:
     class ConfiguredLogisterMiddleware(LogisterMiddleware):
         def __init__(self, get_response: Callable[[Any], Any]) -> None:
-            super().__init__(get_response, client=client, transaction_namer=transaction_namer)
+            super().__init__(
+                get_response,
+                client=client,
+                transaction_namer=transaction_namer,
+                capture_spans=capture_spans,
+            )
 
     ConfiguredLogisterMiddleware.__name__ = "ConfiguredLogisterMiddleware"
     return ConfiguredLogisterMiddleware

@@ -107,6 +107,44 @@ def test_capture_metric_accepts_unit_level_and_fingerprint() -> None:
     assert event["context"]["request_id"] == "req-123"
 
 
+def test_capture_span_includes_trace_timing_context() -> None:
+    client = LogisterClient(api_key="test-token", environment="production", release="2026.04.22")
+    response = Mock()
+    response.json.return_value = {"status": "accepted"}
+    response.raise_for_status.return_value = None
+
+    with patch("logister.client.httpx.Client", autospec=True) as client_class:
+        client_instance = client_class.return_value
+        client_instance.post.return_value = response
+
+        client.capture_span(
+            "GET /checkout",
+            245.7,
+            kind="server",
+            status="ok",
+            trace_id="trace-123",
+            request_id="req-123",
+            span_id="span-root",
+            started_at="2026-05-22T12:00:00Z",
+            context={"route": "GET /checkout", "timing_breakdown": {"db": 40.2, "render": 80}},
+        )
+
+    _, kwargs = client_instance.post.call_args
+    event = kwargs["json"]["event"]
+    assert event["event_type"] == "span"
+    assert event["message"] == "GET /checkout"
+    assert event["trace_id"] == "trace-123"
+    assert event["request_id"] == "req-123"
+    assert event["span_id"] == "span-root"
+    assert event["kind"] == "server"
+    assert event["duration_ms"] == 245.7
+    assert event["context"]["environment"] == "production"
+    assert event["context"]["release"] == "2026.04.22"
+    assert event["context"]["trace_id"] == "trace-123"
+    assert event["context"]["span_kind"] == "server"
+    assert event["context"]["timing_breakdown"] == {"db": 40.2, "render": 80}
+
+
 def test_from_env_builds_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGISTER_API_KEY", "env-token")
     monkeypatch.setenv("LOGISTER_BASE_URL", "https://logs.example")
@@ -313,6 +351,32 @@ def test_fastapi_instrumentation_captures_transaction() -> None:
     assert kwargs["context"]["request"]["headers"]["X-Request-Id"] == "req-1"
 
 
+def test_fastapi_instrumentation_can_capture_request_span() -> None:
+    app = FakeFastAPIApp()
+    client = Mock(spec=LogisterClient)
+    instrument_fastapi(app, client, capture_spans=True)
+
+    middleware = app.middlewares["http"]
+    request = FakeRequest(
+        method="GET",
+        url=FakeURL(path="/health"),
+        headers={"x-request-id": "req-1", "x-trace-id": "trace-1"},
+    )
+
+    async def call_next(_: FakeRequest) -> FakeResponse:
+        return FakeResponse(status_code=204)
+
+    asyncio.run(middleware(request, call_next))
+
+    client.capture_span.assert_called_once()
+    args, kwargs = client.capture_span.call_args
+    assert args[0] == "GET /health"
+    assert kwargs["kind"] == "server"
+    assert kwargs["status"] == "ok"
+    assert kwargs["request_id"] == "req-1"
+    assert kwargs["trace_id"] == "trace-1"
+
+
 def test_fastapi_instrumentation_captures_uncaught_exception() -> None:
     app = FakeFastAPIApp()
     client = Mock(spec=LogisterClient)
@@ -363,6 +427,30 @@ def test_django_middleware_captures_transaction() -> None:
     assert kwargs["context"]["request"]["headers"]["X-Request-Id"] == "req-77"
 
 
+def test_django_middleware_can_capture_request_span() -> None:
+    client = Mock(spec=LogisterClient)
+    middleware = LogisterMiddleware(
+        lambda request: FakeResponse(status_code=200),
+        client=client,
+        capture_spans=True,
+    )
+    request = FakeDjangoRequest(
+        method="GET",
+        path="/orders",
+        META={"HTTP_X_REQUEST_ID": "req-77", "HTTP_X_TRACE_ID": "trace-77"},
+    )
+
+    middleware(request)
+
+    client.capture_span.assert_called_once()
+    args, kwargs = client.capture_span.call_args
+    assert args[0] == "GET /orders"
+    assert kwargs["kind"] == "server"
+    assert kwargs["status"] == "ok"
+    assert kwargs["request_id"] == "req-77"
+    assert kwargs["trace_id"] == "trace-77"
+
+
 def test_django_middleware_captures_exception() -> None:
     client = Mock(spec=LogisterClient)
     middleware = LogisterMiddleware(lambda request: FakeResponse(status_code=200), client=client)
@@ -403,6 +491,7 @@ class FakeFlaskRequest:
 @dataclass
 class FakeFlaskG:
     _logister_started_at: float | None = None
+    _logister_started_at_wall: object | None = None
     _logister_transaction_name: str | None = None
     _logister_transaction_recorded: bool = False
     _logister_exception_reported: bool = False
@@ -440,6 +529,30 @@ def test_flask_instrumentation_captures_transaction() -> None:
     assert kwargs["context"]["status_code"] == 204
     assert kwargs["context"]["url"] == "https://example.com/health?full=true"
     assert kwargs["context"]["request"]["view_args"]["order_id"] == "42"
+
+
+def test_flask_instrumentation_can_capture_request_span() -> None:
+    app = FakeFlaskApp()
+    client = Mock(spec=LogisterClient)
+    flask_request = FakeFlaskRequest(
+        method="GET",
+        path="/health",
+        headers={"X-Request-Id": "req-88", "X-Trace-Id": "trace-88"},
+    )
+    flask_g = FakeFlaskG()
+
+    with patch("logister.flask._flask_state", return_value=(flask_g, flask_request)):
+        instrument_flask(app, client, capture_spans=True)
+        app.before_request_funcs[0]()
+        app.after_request_funcs[0](FakeResponse(status_code=204))
+
+    client.capture_span.assert_called_once()
+    args, kwargs = client.capture_span.call_args
+    assert args[0] == "GET /health"
+    assert kwargs["kind"] == "server"
+    assert kwargs["status"] == "ok"
+    assert kwargs["request_id"] == "req-88"
+    assert kwargs["trace_id"] == "trace-88"
 
 
 def test_flask_instrumentation_captures_exception() -> None:

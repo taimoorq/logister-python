@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Callable
 
@@ -13,6 +14,7 @@ def instrument_fastapi(
     client: LogisterClient,
     *,
     transaction_namer: TransactionNamer | None = None,
+    capture_spans: bool = False,
 ) -> Any:
     if getattr(app.state, "_logister_fastapi_installed", False):
         return app
@@ -20,6 +22,7 @@ def instrument_fastapi(
     @app.middleware("http")
     async def logister_middleware(request: Any, call_next: Callable[[Any], Any]) -> Any:
         started_at = perf_counter()
+        started_wall = datetime.now(UTC)
         name = _transaction_name(request, transaction_namer)
         trace_id = _header(request, "x-trace-id")
         request_id = _header(request, "x-request-id")
@@ -36,6 +39,18 @@ def instrument_fastapi(
                 trace_id=trace_id,
                 request_id=request_id,
             )
+            if capture_spans:
+                client.capture_span(
+                    name,
+                    duration_ms,
+                    context=context,
+                    trace_id=trace_id or request_id,
+                    request_id=request_id,
+                    kind="server",
+                    status="error",
+                    started_at=started_wall,
+                    ended_at=datetime.now(UTC),
+                )
             client.capture_exception(
                 exc,
                 context=context,
@@ -45,13 +60,27 @@ def instrument_fastapi(
             raise
 
         duration_ms = (perf_counter() - started_at) * 1000.0
+        status_code = getattr(response, "status_code", None)
+        context = _request_context(request, status_code=status_code)
         client.capture_transaction(
             name,
             duration_ms,
-            context=_request_context(request, status_code=getattr(response, "status_code", None)),
+            context=context,
             trace_id=trace_id,
             request_id=request_id,
         )
+        if capture_spans:
+            client.capture_span(
+                name,
+                duration_ms,
+                context=context,
+                trace_id=trace_id or request_id,
+                request_id=request_id,
+                kind="server",
+                status="error" if status_code and status_code >= 500 else "ok",
+                started_at=started_wall,
+                ended_at=datetime.now(UTC),
+            )
         return response
 
     app.state._logister_fastapi_installed = True

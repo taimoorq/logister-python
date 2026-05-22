@@ -1,6 +1,6 @@
 # logister-python
 
-Python SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.
+Python SDK for sending errors, logs, metrics, transactions, spans, and check-ins to Logister.
 
 Install it from PyPI as `logister-python`.
 
@@ -47,7 +47,7 @@ Use `logister-python` when you want a Python service to send operational telemet
 - API and web apps: FastAPI, Django, Flask
 - Worker and scheduler processes: Celery, cron-style jobs, CLI tasks
 - Standard-library logging pipelines: `logging` to Logister events
-- Shared custom instrumentation: errors, logs, metrics, transactions, and check-ins
+- Shared custom instrumentation: errors, logs, metrics, transactions, spans, and check-ins
 
 ## Package Links
 
@@ -126,6 +126,15 @@ client.capture_metric(
     context={"cache": "primary"},
 )
 client.capture_transaction("POST /checkout", 182.4, request_id="req_123")
+client.capture_span(
+    "render checkout",
+    82.1,
+    kind="render",
+    status="ok",
+    trace_id="trace_123",
+    parent_span_id="span_root",
+    context={"route": "POST /checkout"},
+)
 ```
 
 ## Python Logging
@@ -198,12 +207,13 @@ from logister import LogisterClient, instrument_fastapi
 
 app = FastAPI()
 logister = LogisterClient.from_env(default_context={"service": "api"})
-instrument_fastapi(app, logister)
+instrument_fastapi(app, logister, capture_spans=True)
 ```
 
 What this records:
 
 - request duration as a `transaction`
+- optional root `server` spans for request load waterfall charts when `capture_spans=True`
 - uncaught request exceptions as an `error`
 - request metadata like method, path, route, full URL, selected headers, client IP, path params, query string, `x-request-id`, and `x-trace-id`
 
@@ -266,11 +276,13 @@ from logister import LogisterClient, build_django_middleware
 
 logister = LogisterClient.from_env(default_context={"service": "django-web"})
 ConfiguredLogisterMiddleware = build_django_middleware(logister)
+ConfiguredLogisterMiddlewareWithSpans = build_django_middleware(logister, capture_spans=True)
 ```
 
 What Django middleware records:
 
 - request duration as a `transaction`
+- optional root `server` spans for request load waterfall charts when `capture_spans=True`
 - uncaught view exceptions via `process_exception()` as an `error`
 - request metadata like method, path, route, full URL, selected headers, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
 
@@ -285,12 +297,13 @@ from logister import LogisterClient, instrument_flask
 
 app = Flask(__name__)
 logister = LogisterClient.from_env(default_context={"service": "flask-web"})
-instrument_flask(app, logister)
+instrument_flask(app, logister, capture_spans=True)
 ```
 
 What Flask instrumentation records:
 
 - request duration as a `transaction`
+- optional root `server` spans for request load waterfall charts when `capture_spans=True`
 - uncaught request exceptions as an `error`
 - request metadata like method, path, full URL, endpoint, blueprint, selected headers, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
 
@@ -352,6 +365,19 @@ client.capture_transaction(
     request_id="req_123",
 )
 
+client.capture_span(
+    "render checkout",
+    82.1,
+    kind="render",
+    status="ok",
+    trace_id="trace_123",
+    parent_span_id="span_root",
+    context={
+        "route": "POST /checkout",
+        "tenant_tier": "enterprise",
+    },
+)
+
 client.capture_message(
     "payment provider retry",
     level="warn",
@@ -378,8 +404,8 @@ Practical Insights recipes:
 
 - Release validation: set `LOGISTER_RELEASE`, then filter Insights to the new release and compare error count, transaction P95, and custom metrics.
 - Worker monitoring: report metrics such as `queue.depth`, `queue.latency`, `task.retry_count`, or `celery.active_tasks` with stable `queue` and `service` context keys.
-- Performance triage: let FastAPI, Django, or Flask instrumentation send request transactions, then add route-level logs and metrics with matching `route` values.
-- Instrumentation audit: open Insights after deploy and confirm errors, logs, metrics, transactions, and check-ins all appear in the recent stream.
+- Performance triage: enable `capture_spans=True` for FastAPI, Django, or Flask instrumentation to feed request load waterfall charts, then add route-level logs and metrics with matching `route` values.
+- Instrumentation audit: open Insights after deploy and confirm errors, logs, metrics, transactions, spans, and check-ins all appear in the recent stream.
 
 Keep custom attributes stable and low-cardinality. Good top-level context keys include `service`, `region`, `queue`, `route`, `tenant_tier`, `provider`, and `feature_flag`. Avoid raw IDs, emails, request bodies, SQL text, and per-user values as Insights dimensions.
 

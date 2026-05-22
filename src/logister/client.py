@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import secrets
 import socket
 import sys
 import traceback as traceback_module
@@ -194,6 +195,62 @@ class LogisterClient:
             duration_ms=duration_ms,
         )
 
+    def capture_span(
+        self,
+        name: str,
+        duration_ms: float | int,
+        *,
+        context: Mapping[str, Any] | None = None,
+        occurred_at: str | datetime | None = None,
+        environment: str | None = None,
+        release: str | None = None,
+        trace_id: str | None = None,
+        request_id: str | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        kind: str = "internal",
+        status: str | None = None,
+        started_at: str | datetime | None = None,
+        ended_at: str | datetime | None = None,
+    ) -> dict[str, Any]:
+        span_id = span_id or secrets.token_hex(8)
+        trace_id = trace_id or span_id
+        span_context = dict(context or {})
+        span_context.setdefault("name", name)
+        span_context.setdefault("trace_id", trace_id)
+        span_context.setdefault("request_id", request_id)
+        span_context.setdefault("span_id", span_id)
+        if parent_span_id:
+            span_context.setdefault("parent_span_id", parent_span_id)
+        span_context.setdefault("span_kind", kind)
+        span_context.setdefault("kind", kind)
+        if status:
+            span_context.setdefault("status", status)
+        span_context.setdefault("duration_ms", duration_ms)
+        if started_at:
+            span_context.setdefault("started_at", self._normalize_timestamp(started_at))
+        if ended_at:
+            span_context.setdefault("ended_at", self._normalize_timestamp(ended_at))
+
+        return self.send_event(
+            event_type="span",
+            level="error" if status == "error" else "info",
+            message=name,
+            context=span_context,
+            occurred_at=occurred_at or started_at,
+            environment=environment,
+            release=release,
+            trace_id=trace_id,
+            request_id=request_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            span_kind=kind,
+            span_status=status,
+            duration_ms=duration_ms,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+
     def check_in(
         self,
         slug: str,
@@ -262,6 +319,12 @@ class LogisterClient:
         expected_interval_seconds: int | None = None,
         check_in_slug: str | None = None,
         check_in_status: str | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        span_kind: str | None = None,
+        span_status: str | None = None,
+        started_at: str | datetime | None = None,
+        ended_at: str | datetime | None = None,
     ) -> dict[str, Any]:
         event_payload: dict[str, Any] = {
             "event_type": event_type,
@@ -280,11 +343,30 @@ class LogisterClient:
                 expected_interval_seconds=expected_interval_seconds,
                 check_in_slug=check_in_slug,
                 check_in_status=check_in_status,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                span_kind=span_kind,
+                span_status=span_status,
+                started_at=started_at,
+                ended_at=ended_at,
             ),
             "occurred_at": self._normalize_timestamp(occurred_at),
         }
         if fingerprint:
             event_payload["fingerprint"] = fingerprint
+        if event_type == "span":
+            event_payload["name"] = message
+            event_payload["duration_ms"] = duration_ms
+            event_payload["trace_id"] = trace_id
+            event_payload["request_id"] = request_id
+            event_payload["span_id"] = span_id
+            event_payload["parent_span_id"] = parent_span_id
+            event_payload["kind"] = span_kind
+            event_payload["status"] = span_status
+            event_payload["started_at"] = self._normalize_timestamp(started_at)
+            if ended_at:
+                event_payload["ended_at"] = self._normalize_timestamp(ended_at)
+            event_payload = {key: value for key, value in event_payload.items() if value is not None}
         return self._post("/api/v1/ingest_events", {"event": event_payload})
 
     def close(self) -> None:
@@ -420,6 +502,12 @@ class LogisterClient:
         expected_interval_seconds: int | None = None,
         check_in_slug: str | None = None,
         check_in_status: str | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        span_kind: str | None = None,
+        span_status: str | None = None,
+        started_at: str | datetime | None = None,
+        ended_at: str | datetime | None = None,
     ) -> dict[str, Any]:
         merged = dict(self.default_context or {})
         merged.update(dict(context or {}))
@@ -442,6 +530,13 @@ class LogisterClient:
         self._set_if_missing(merged, "expected_interval_seconds", expected_interval_seconds)
         self._set_if_missing(merged, "check_in_slug", check_in_slug)
         self._set_if_missing(merged, "check_in_status", check_in_status)
+        self._set_if_missing(merged, "span_id", span_id)
+        self._set_if_missing(merged, "parent_span_id", parent_span_id)
+        self._set_if_missing(merged, "span_kind", span_kind)
+        self._set_if_missing(merged, "kind", span_kind)
+        self._set_if_missing(merged, "status", span_status)
+        self._set_if_missing(merged, "started_at", self._normalize_timestamp(started_at) if started_at else None)
+        self._set_if_missing(merged, "ended_at", self._normalize_timestamp(ended_at) if ended_at else None)
 
         return merged
 
