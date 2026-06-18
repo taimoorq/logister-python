@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.2.4 - 2026-06-18
+
+- Added first-class source context fields (`repository`, `commit_sha`, and `branch`) with `LOGISTER_*` and GitHub Actions environment variable support.
+- Added `record_deployment()` for posting release-to-commit deployment records to Logister.
+
 ## v0.2.3 - 2026-05-22
 
 - Added `capture_span` plus opt-in FastAPI, Django, and Flask request span capture for request load waterfall charts.

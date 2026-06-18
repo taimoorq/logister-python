@@ -25,9 +25,12 @@ class LogisterClient:
     timeout: float = 5.0
     environment: str | None = None
     release: str | None = None
+    repository: str | None = None
+    commit_sha: str | None = None
+    branch: str | None = None
     default_context: Mapping[str, Any] | None = None
     capture_locals: bool = False
-    user_agent: str = "logister-python/0.2.3"
+    user_agent: str = "logister-python/0.2.4"
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
 
     @classmethod
@@ -39,6 +42,9 @@ class LogisterClient:
         timeout_var: str = "LOGISTER_TIMEOUT",
         environment_var: str = "LOGISTER_ENVIRONMENT",
         release_var: str = "LOGISTER_RELEASE",
+        repository_var: str = "LOGISTER_REPOSITORY",
+        commit_sha_var: str = "LOGISTER_COMMIT_SHA",
+        branch_var: str = "LOGISTER_BRANCH",
         capture_locals_var: str = "LOGISTER_CAPTURE_LOCALS",
         default_context: Mapping[str, Any] | None = None,
     ) -> "LogisterClient":
@@ -56,6 +62,9 @@ class LogisterClient:
             timeout=timeout,
             environment=os.getenv(environment_var, "").strip() or None,
             release=os.getenv(release_var, "").strip() or None,
+            repository=os.getenv(repository_var, "").strip() or os.getenv("GITHUB_REPOSITORY", "").strip() or None,
+            commit_sha=os.getenv(commit_sha_var, "").strip() or os.getenv("GITHUB_SHA", "").strip() or None,
+            branch=os.getenv(branch_var, "").strip() or os.getenv("GITHUB_REF_NAME", "").strip() or None,
             default_context=default_context,
             capture_locals=capture_locals,
         )
@@ -369,6 +378,40 @@ class LogisterClient:
             event_payload = {key: value for key, value in event_payload.items() if value is not None}
         return self._post("/api/v1/ingest_events", {"event": event_payload})
 
+    def record_deployment(
+        self,
+        *,
+        release: str,
+        repository: str | None = None,
+        commit_sha: str | None = None,
+        environment: str | None = None,
+        branch: str | None = None,
+        deployed_at: str | datetime | None = None,
+        pull_request_number: str | int | None = None,
+        pull_request_url: str | None = None,
+        release_tag: str | None = None,
+        release_url: str | None = None,
+        compare_url: str | None = None,
+        workflow_run_url: str | None = None,
+        deployment_url: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "release": release,
+            "environment": environment or self.environment,
+            "repository": repository or self.repository,
+            "commit_sha": commit_sha or self.commit_sha,
+            "branch": branch or self.branch,
+            "deployed_at": self._normalize_timestamp(deployed_at) if deployed_at else None,
+            "pull_request_number": pull_request_number,
+            "pull_request_url": pull_request_url,
+            "release_tag": release_tag,
+            "release_url": release_url,
+            "compare_url": compare_url,
+            "workflow_run_url": workflow_run_url,
+            "deployment_url": deployment_url,
+        }
+        return self._post("/api/v1/deployments", {"deployment": {key: value for key, value in payload.items() if value is not None}})
+
     def close(self) -> None:
         if self._http_client is not None:
             self._http_client.close()
@@ -514,6 +557,9 @@ class LogisterClient:
 
         self._set_if_missing(merged, "environment", environment or self.environment)
         self._set_if_missing(merged, "release", release or self.release)
+        self._set_if_missing(merged, "repository", self.repository)
+        self._set_if_missing(merged, "commit_sha", self.commit_sha)
+        self._set_if_missing(merged, "branch", self.branch)
         self._set_if_missing(merged, "trace_id", trace_id)
         self._set_if_missing(merged, "request_id", request_id)
         self._set_if_missing(merged, "session_id", session_id)

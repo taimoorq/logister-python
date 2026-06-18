@@ -24,6 +24,9 @@ def test_send_event_wraps_payload_and_sets_auth_header() -> None:
         base_url="https://logister.example",
         environment="production",
         release="2026.04.22",
+        repository="acme/checkout",
+        commit_sha="abc1234",
+        branch="main",
         default_context={"service": "api"},
     )
     response = Mock()
@@ -44,6 +47,9 @@ def test_send_event_wraps_payload_and_sets_auth_header() -> None:
     assert kwargs["json"]["event"]["context"]["service"] == "api"
     assert kwargs["json"]["event"]["context"]["environment"] == "production"
     assert kwargs["json"]["event"]["context"]["release"] == "2026.04.22"
+    assert kwargs["json"]["event"]["context"]["repository"] == "acme/checkout"
+    assert kwargs["json"]["event"]["context"]["commit_sha"] == "abc1234"
+    assert kwargs["json"]["event"]["context"]["branch"] == "main"
     assert kwargs["json"]["event"]["context"]["request_id"] == "req-123"
     client_class.assert_called_once()
     _, client_kwargs = client_class.call_args
@@ -151,6 +157,9 @@ def test_from_env_builds_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOGISTER_TIMEOUT", "9.5")
     monkeypatch.setenv("LOGISTER_ENVIRONMENT", "staging")
     monkeypatch.setenv("LOGISTER_RELEASE", "sha-123")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "acme/billing")
+    monkeypatch.setenv("GITHUB_SHA", "abcdef1")
+    monkeypatch.setenv("GITHUB_REF_NAME", "main")
     monkeypatch.setenv("LOGISTER_CAPTURE_LOCALS", "true")
 
     client = LogisterClient.from_env(default_context={"service": "billing"})
@@ -160,8 +169,49 @@ def test_from_env_builds_client(monkeypatch: pytest.MonkeyPatch) -> None:
     assert client.timeout == 9.5
     assert client.environment == "staging"
     assert client.release == "sha-123"
+    assert client.repository == "acme/billing"
+    assert client.commit_sha == "abcdef1"
+    assert client.branch == "main"
     assert client.capture_locals is True
     assert client.default_context == {"service": "billing"}
+
+
+def test_record_deployment_posts_deployment_payload() -> None:
+    client = LogisterClient(
+        api_key="test-token",
+        base_url="https://logister.example",
+        environment="production",
+        repository="acme/checkout",
+        commit_sha="abcdef123456",
+        branch="main",
+    )
+    response = Mock()
+    response.json.return_value = {"status": "accepted"}
+    response.raise_for_status.return_value = None
+
+    with patch("logister.client.httpx.Client", autospec=True) as client_class:
+        client_instance = client_class.return_value
+        client_instance.post.return_value = response
+
+        client.record_deployment(
+            release="checkout@2026.06.18",
+            deployed_at="2026-06-18T14:30:00Z",
+            pull_request_number=42,
+            workflow_run_url="https://github.com/acme/checkout/actions/runs/123",
+        )
+
+    path, kwargs = client_instance.post.call_args.args[0], client_instance.post.call_args.kwargs
+    assert path == "/api/v1/deployments"
+    assert kwargs["json"]["deployment"] == {
+        "release": "checkout@2026.06.18",
+        "environment": "production",
+        "repository": "acme/checkout",
+        "commit_sha": "abcdef123456",
+        "branch": "main",
+        "deployed_at": "2026-06-18T14:30:00Z",
+        "pull_request_number": 42,
+        "workflow_run_url": "https://github.com/acme/checkout/actions/runs/123",
+    }
 
 
 def test_capture_exception_includes_python_traceback_frames() -> None:

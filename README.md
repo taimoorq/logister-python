@@ -105,6 +105,9 @@ Package index: https://pypi.org/project/logister-python/
 - `LOGISTER_TIMEOUT` (defaults to `5.0`)
 - `LOGISTER_ENVIRONMENT`
 - `LOGISTER_RELEASE`
+- `LOGISTER_REPOSITORY` (falls back to `GITHUB_REPOSITORY`)
+- `LOGISTER_COMMIT_SHA` (falls back to `GITHUB_SHA`)
+- `LOGISTER_BRANCH` (falls back to `GITHUB_REF_NAME`)
 - `LOGISTER_CAPTURE_LOCALS` (`true` / `false`, defaults to `false`)
 
 ## Core Client
@@ -409,6 +412,37 @@ Practical Insights recipes:
 
 Keep custom attributes stable and low-cardinality. Good top-level context keys include `service`, `region`, `queue`, `route`, `tenant_tier`, `provider`, and `feature_flag`. Avoid raw IDs, emails, request bodies, SQL text, and per-user values as Insights dimensions.
 
+## GitHub source context and deployments
+
+When a Logister project is connected to a GitHub repository, `LogisterClient.from_env()` can attach source context automatically:
+
+```bash
+export LOGISTER_ENVIRONMENT=production
+export LOGISTER_RELEASE=checkout@2026.06.18
+export LOGISTER_REPOSITORY=acme/checkout
+export LOGISTER_COMMIT_SHA="$(git rev-parse HEAD)"
+export LOGISTER_BRANCH="$(git branch --show-current)"
+```
+
+```python
+client = LogisterClient.from_env(default_context={"service": "checkout-api"})
+
+client.capture_exception(error)
+```
+
+CI/CD can also record the release-to-commit mapping directly:
+
+```python
+client.record_deployment(
+    release="checkout@2026.06.18",
+    environment="production",
+    repository="acme/checkout",
+    commit_sha="4f8c2d1a9b7e6c5d4a3b2c1d0e9f8a7b6c5d4e3f",
+    branch="main",
+    workflow_run_url="https://github.com/acme/checkout/actions/runs/123",
+)
+```
+
 ## Event Mapping
 
 - web request duration -> `transaction`
@@ -419,9 +453,9 @@ Keep custom attributes stable and low-cardinality. Good top-level context keys i
 
 ## Publishing
 
-This package is intended to publish to PyPI with Trusted Publishing from GitHub Actions. A commit or merge to `main` runs CI only; publishing requires a version tag.
+This package is intended to publish to PyPI with Trusted Publishing from GitHub Actions. After CI passes on `main`, the release-from-main workflow creates the matching version tag and dispatches the PyPI publish and GitHub release workflows.
 
-- Push a tag like `v0.2.3`
+- Merge the version bump to `main`, or push a tag like `v0.2.4`
 - GitHub Actions builds the distributions
 - PyPI Trusted Publishing handles the upload with OIDC
 
