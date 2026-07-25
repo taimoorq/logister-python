@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.3.0 - 2026-07-25
+
+- Added Python 3.14 to the tested and declared support matrix.
+- Raised the Django integration floor to the supported Django 5.2 LTS line and added Django 6 compatibility.
+- Updated the test suite to patched pytest 9 releases and added dependency vulnerability auditing to CI.
+- Hardened release automation with immutable action references and one ordered publish-and-release path.
+
 ## v0.2.4 - 2026-06-18
 
 - Added first-class source context fields (`repository`, `commit_sha`, and `branch`) with `LOGISTER_*` and GitHub Actions environment variable support.
