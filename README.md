@@ -1,10 +1,10 @@
 # logister-python
 
-Python SDK for sending errors, logs, metrics, transactions, spans, and check-ins to Logister.
+Python SDK for sending errors, logs, metrics, transactions, spans, and scheduled-job check-ins to Logister.
 
 Install it from PyPI as `logister-python`.
 
-This package is aimed at Python teams running APIs, workers, schedulers, and internal services. The current focus is the set of places Python teams usually need first:
+Use it in APIs, workers, schedulers, command-line jobs, and internal services. It includes:
 
 - a shared `LogisterClient`
 - native Python `logging` integration
@@ -16,13 +16,44 @@ This package is aimed at Python teams running APIs, workers, schedulers, and int
 Supports Python 3.11 and newer.
 
 - Main Logister app: https://github.com/taimoorq/logister
-- Product docs: https://docs.logister.org/
-- Insights beta guide: https://docs.logister.org/product/#insights-beta
-- Python integration docs: https://docs.logister.org/integrations/python/
+- Product docs: https://logister.org/docs/
+- Insights guide: https://logister.org/docs/product/#insights
+- Python integration docs: https://logister.org/docs/integrations/python/
 - PyPI package: https://pypi.org/project/logister-python/
+
+## Quick start
+
+Create a project in Logister and generate a project API key under **Project settings → API keys**.
+
+```bash
+python -m pip install logister-python
+
+export LOGISTER_API_KEY="<project-api-key>"
+export LOGISTER_BASE_URL="https://logister.example.com"
+export LOGISTER_ENVIRONMENT="development"
+```
+
+Send a test error:
+
+```python
+from logister import LogisterClient
+
+with LogisterClient.from_env(default_context={"service": "checkout-api"}) as client:
+    try:
+        raise RuntimeError("README test error")
+    except RuntimeError as error:
+        client.capture_exception(
+            error,
+            fingerprint="readme-test-error",
+            context={"component": "checkout"},
+        )
+```
+
+Open the project inbox and confirm that **README test error** appears. A `401` response usually means the key or base URL is wrong; the [Python integration guide](https://logister.org/docs/integrations/python/) covers framework setup and troubleshooting.
 
 ## Table Of Contents
 
+- [Quick start](#quick-start)
 - [What This Package Is For](#what-this-package-is-for)
 - [Package Links](#package-links)
 - [Install From PyPI](#install-from-pypi)
@@ -35,8 +66,10 @@ Supports Python 3.11 and newer.
 - [Django](#django)
 - [Flask](#flask)
 - [Check-ins](#check-ins)
-- [Using project Insights beta](#using-project-insights-beta)
+- [Using project Insights](#using-project-insights)
+- [GitHub source context and deployments](#github-source-context-and-deployments)
 - [Event Mapping](#event-mapping)
+- [Development](#development)
 - [Publishing](#publishing)
 - [Release Flow](#release-flow)
 
@@ -54,7 +87,7 @@ Use `logister-python` when you want a Python service to send operational telemet
 - PyPI package: https://pypi.org/project/logister-python/
 - GitHub releases: https://github.com/taimoorq/logister-python/releases
 - Source repository: https://github.com/taimoorq/logister-python
-- Integration docs: https://docs.logister.org/integrations/python/
+- Integration docs: https://logister.org/docs/integrations/python/
 
 ## Install From PyPI
 
@@ -199,6 +232,8 @@ Captured Python exceptions include structured traceback frames, backtrace text, 
 
 Set `LOGISTER_CAPTURE_LOCALS=true` if you want frame locals included in error events for the Logister UI.
 
+Frame locals can contain passwords, tokens, request bodies, and personal data. Leave this option off unless you have reviewed what your application keeps in local variables and your retention policy permits collecting it.
+
 ## FastAPI
 
 This is the cleanest path for modern Python API services.
@@ -330,7 +365,7 @@ client.check_in(
 )
 ```
 
-## Using project Insights beta
+## Using project Insights
 
 The Logister project Insights tab combines Inbox, Activity, and Performance data into live dashboard views. Python services get the most useful Insights view when they send consistent `LOGISTER_ENVIRONMENT`, `LOGISTER_RELEASE`, and stable top-level context attributes.
 
@@ -445,22 +480,44 @@ client.record_deployment(
 
 ## Event Mapping
 
-- web request duration -> `transaction`
-- uncaught exception -> `error`
-- app log / warning -> `log`
-- custom counters / measurements -> `metric`
-- scheduled job heartbeat -> `check_in`
+| Application signal | Logister event |
+|---|---|
+| Web request or task duration | `transaction` |
+| Uncaught or manually captured exception | `error` |
+| Application log or warning | `log` |
+| Counter, gauge, or measurement | `metric` |
+| Request or custom operation segment | `span` |
+| Scheduled-job heartbeat | `check_in` |
+
+## Development
+
+```bash
+python -m pip install --upgrade pip 'setuptools>=83'
+python -m pip install -e '.[dev,fastapi,celery,django,flask]' pip-audit
+python -m pip_audit
+python -m pytest
+python -m build
+```
 
 ## Publishing
 
-This package is intended to publish to PyPI with Trusted Publishing from GitHub Actions. After CI passes on `main`, the release-from-main workflow creates the matching version tag and dispatches the PyPI publish and GitHub release workflows.
+`pyproject.toml` is the package version source of truth. Update it and `CHANGELOG.md` together. After CI passes on `main`, the release-from-main workflow creates a matching `vX.Y.Z` tag and dispatches `publish.yml`.
 
-- Merge the version bump to `main`, or push a tag like `v0.2.4`
-- GitHub Actions builds the distributions
-- PyPI Trusted Publishing handles the upload with OIDC
+- Merge the version bump to `main`, or push a matching tag such as `vX.Y.Z`
+- GitHub Actions tests and builds the distributions once
+- PyPI Trusted Publishing uploads those distributions with OIDC
+- the workflow creates the GitHub Release only after the upload succeeds
 
 ## Release Flow
 
 - `CHANGELOG.md` tracks package releases
-- Git tags trigger PyPI publish and GitHub releases
+- Git tags trigger the ordered PyPI publish and GitHub Release flow
 - This package keeps its own versioning separate from the main Logister app
+- PyPI versions are immutable; corrections require a new patch version
+
+Verify both release surfaces:
+
+```bash
+curl -fsSL https://pypi.org/pypi/logister-python/json | jq -r .info.version
+gh release view vX.Y.Z
+```
