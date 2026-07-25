@@ -60,4 +60,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "${{ steps.version.outputs.tag }}" -m "Release logister-python ${{ steps.version.outputs.tag }}"
           git push origin "${{ steps.version.outputs.tag }}"
-          gh workflow run release.yml --ref "${{ steps.version.outputs.tag }}"
+          gh workflow run publish.yml --ref "${{ steps.version.outputs.tag }}"
