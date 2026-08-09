@@ -54,6 +54,7 @@ def test_send_event_wraps_payload_and_sets_auth_header() -> None:
     client_class.assert_called_once()
     _, client_kwargs = client_class.call_args
     assert client_kwargs["headers"]["Authorization"] == "Bearer test-token"
+    assert client_kwargs["headers"]["User-Agent"] == "logister-python/0.3.1"
 
 
 def test_check_in_uses_check_in_root_payload() -> None:

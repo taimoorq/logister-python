@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.3.1 - 2026-08-09
+
+- Align the default SDK user agent with the published package version.
+
 ## v0.3.0 - 2026-07-25
 
 - Added Python 3.14 to the tested and declared support matrix.

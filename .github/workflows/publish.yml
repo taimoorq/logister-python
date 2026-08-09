@@ -23,6 +23,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
+      - name: Check public repository safety
+        run: bash scripts/publication-safety-check.sh
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
@@ -42,10 +44,47 @@ jobs:
           if actual != expected:
               raise SystemExit(f"Release ref {actual!r} does not match {expected!r}")
           PY
+          python scripts/validate-release-metadata.py
+      - name: Validate release notes
+        env:
+          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          awk -v tag="$TAG_NAME" '
+            $0 ~ "^## " tag "([[:space:]]|-|$)" { capture=1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
       - name: Build distributions
         run: |
           python -m pip install --upgrade pip build
           python -m build
+      - name: Inspect distribution file lists
+        run: |
+          python <<'PY'
+          from pathlib import Path, PurePosixPath
+          import tarfile
+          import zipfile
+
+          def verify(names):
+              for name in names:
+                  path = PurePosixPath(name)
+                  lowered = name.lower()
+                  if path.is_absolute() or ".." in path.parts:
+                      raise SystemExit(f"Unsafe absolute or parent path in distribution: {name}")
+                  if any(part == ".env" or part.startswith("release-train-plan") for part in path.parts):
+                      raise SystemExit(f"Private file in distribution: {name}")
+                  if lowered.endswith((".key", ".pem", ".p12", ".pfx")):
+                      raise SystemExit(f"Credential-shaped file in distribution: {name}")
+
+          for artifact in Path("dist").iterdir():
+              if artifact.suffix == ".whl":
+                  with zipfile.ZipFile(artifact) as archive:
+                      verify(archive.namelist())
+              elif artifact.name.endswith(".tar.gz"):
+                  with tarfile.open(artifact, "r:gz") as archive:
+                      verify(archive.getnames())
+          PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: python-package-distributions
@@ -63,8 +102,46 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
+      - name: Check PyPI package version
+        id: pypi_package
+        env:
+          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          version="${TAG_NAME#v}"
+          if curl --fail --silent "https://pypi.org/pypi/logister-python/${version}/json" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "logister-python ${version} already exists on PyPI."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish package distributions to PyPI
+        if: steps.pypi_package.outputs.exists != 'true'
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+      - name: Verify PyPI publication
+        env:
+          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          version="${TAG_NAME#v}"
+          for attempt in $(seq 1 30); do
+            if metadata="$(curl --fail --silent "https://pypi.org/pypi/logister-python/${version}/json")"; then
+              verified=true
+              for artifact in dist/*; do
+                filename="$(basename "$artifact")"
+                expected="$(shasum -a 256 "$artifact" | awk '{print $1}')"
+                actual="$(echo "$metadata" | jq -r --arg filename "$filename" '.urls[] | select(.filename == $filename) | .digests.sha256')"
+                if [ "$actual" != "$expected" ]; then
+                  verified=false
+                  break
+                fi
+              done
+              if [ "$verified" = "true" ]; then
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+          echo "::error::PyPI did not expose the exact tested distributions within the verification window."
+          exit 1
 
   github-release:
     needs: publish-pypi
@@ -81,10 +158,11 @@ jobs:
           TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           notes=$(awk -v tag="$TAG_NAME" '
-            $0 ~ "^## " tag " - " {capture=1; next}
+            $0 ~ "^## " tag "([[:space:]]|-|$)" {capture=1; next}
             capture && $0 ~ /^## / {exit}
             capture {print}
           ' CHANGELOG.md)
+          test -n "$notes"
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release edit "$TAG_NAME" --title "$TAG_NAME" --notes "$notes"
           else
