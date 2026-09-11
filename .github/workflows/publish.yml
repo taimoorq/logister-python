@@ -131,11 +131,20 @@ jobs:
         env:
           TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
+          set -euo pipefail
           version="${TAG_NAME#v}"
+          # The publisher leaves .publish.attestation sidecars in dist/.
+          # Only distribution files are exposed by the PyPI JSON API.
+          shopt -s nullglob
+          artifacts=(dist/*.whl dist/*.tar.gz)
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "::error::No built distributions found for publication verification."
+            exit 1
+          fi
           for attempt in $(seq 1 30); do
-            if metadata="$(curl --fail --silent "https://pypi.org/pypi/logister-python/${version}/json")"; then
+            if metadata="$(curl --fail --silent --max-time 30 "https://pypi.org/pypi/logister-python/${version}/json")"; then
               verified=true
-              for artifact in dist/*; do
+              for artifact in "${artifacts[@]}"; do
                 filename="$(basename "$artifact")"
                 expected="$(shasum -a 256 "$artifact" | awk '{print $1}')"
                 actual="$(echo "$metadata" | jq -r --arg filename "$filename" '.urls[] | select(.filename == $filename) | .digests.sha256')"
