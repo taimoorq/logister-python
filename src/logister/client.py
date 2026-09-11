@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import json
+import time
+from uuid import UUID, uuid4
 import platform
 import secrets
 import socket
@@ -9,13 +12,12 @@ import traceback as traceback_module
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from os import getpid
-from typing import Any, Mapping
+from typing import Any, Mapping, Iterable
 
 import httpx
 
 
-class LogisterError(RuntimeError):
-    pass
+from .delivery import LogisterError, PreparedEvent, RetryPolicy, DeliveryResult, post, deliver_batch
 
 
 @dataclass(slots=True)
@@ -30,7 +32,8 @@ class LogisterClient:
     branch: str | None = None
     default_context: Mapping[str, Any] | None = None
     capture_locals: bool = False
-    user_agent: str = "logister-python/0.3.1"
+    user_agent: str = "logister-python/0.4.0"
+    retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
 
     @classmethod
@@ -312,6 +315,7 @@ class LogisterClient:
         self,
         *,
         event_type: str,
+        event_uuid: str | None = None,
         level: str,
         message: str,
         context: Mapping[str, Any] | None = None,
@@ -335,7 +339,64 @@ class LogisterClient:
         started_at: str | datetime | None = None,
         ended_at: str | datetime | None = None,
     ) -> dict[str, Any]:
+        return self.send_prepared_event(self.prepare_event(
+            event_type=event_type,
+            event_uuid=event_uuid,
+            level=level,
+            message=message,
+            context=context,
+            fingerprint=fingerprint,
+            occurred_at=occurred_at,
+            environment=environment,
+            release=release,
+            trace_id=trace_id,
+            request_id=request_id,
+            session_id=session_id,
+            user_id=user_id,
+            transaction_name=transaction_name,
+            duration_ms=duration_ms,
+            expected_interval_seconds=expected_interval_seconds,
+            check_in_slug=check_in_slug,
+            check_in_status=check_in_status,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            span_kind=span_kind,
+            span_status=span_status,
+            started_at=started_at,
+            ended_at=ended_at,
+        ))
+
+    def prepare_event(
+        self,
+        *,
+        event_type: str,
+        event_uuid: str | None = None,
+        level: str,
+        message: str,
+        context: Mapping[str, Any] | None = None,
+        fingerprint: str | None = None,
+        occurred_at: str | datetime | None = None,
+        environment: str | None = None,
+        release: str | None = None,
+        trace_id: str | None = None,
+        request_id: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        transaction_name: str | None = None,
+        duration_ms: float | int | None = None,
+        expected_interval_seconds: int | None = None,
+        check_in_slug: str | None = None,
+        check_in_status: str | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        span_kind: str | None = None,
+        span_status: str | None = None,
+        started_at: str | datetime | None = None,
+        ended_at: str | datetime | None = None,
+    ) -> PreparedEvent:
+        event_id = str(UUID(event_uuid)) if event_uuid else str(uuid4())
         event_payload: dict[str, Any] = {
+            "uuid": event_id,
             "event_type": event_type,
             "level": level,
             "message": message,
@@ -376,7 +437,24 @@ class LogisterClient:
             if ended_at:
                 event_payload["ended_at"] = self._normalize_timestamp(ended_at)
             event_payload = {key: value for key, value in event_payload.items() if value is not None}
-        return self._post("/api/v1/ingest_events", {"event": event_payload})
+        return PreparedEvent(event_id, json.dumps({"event": event_payload}, allow_nan=False, separators=(",", ":")).encode("utf-8"))
+
+    def send_prepared_event(self, event: PreparedEvent) -> dict[str, Any]:
+        return self._send_prepared("/api/v1/ingest_events", event.body, {"Content-Type": "application/json"})
+
+    def send_events(self, events: Iterable[PreparedEvent | Mapping[str, Any]]) -> list[DeliveryResult]:
+        # Prepare all inputs before the first side effect; validation cannot leave
+        # an undisclosed partially sent batch. A call is bounded to 1,000 events.
+        prepared = []
+        for event in events:
+            if len(prepared) >= 1_000:
+                raise ValueError("send_events accepts at most 1,000 events per call")
+            prepared.append(event if isinstance(event, PreparedEvent) else self.prepare_event(**event))
+        deadline = time.monotonic() + self.retry_policy.total_timeout
+        return deliver_batch(prepared, lambda path, body, headers: self._send_prepared(path, body, headers, deadline=deadline))
+
+    def _send_prepared(self, path, body, headers, *, deadline=None):
+        return post(self._http(), path, body, policy=self.retry_policy, timeout=self.timeout, headers=headers, deadline=deadline)
 
     def record_deployment(
         self,
