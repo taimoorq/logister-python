@@ -1,3 +1,4 @@
+import json
 import asyncio
 import logging
 from dataclasses import dataclass, field
@@ -42,19 +43,19 @@ def test_send_event_wraps_payload_and_sets_auth_header() -> None:
     assert result == {"status": "accepted"}
     client_instance.post.assert_called_once()
     _, kwargs = client_instance.post.call_args
-    assert kwargs["json"]["event"]["event_type"] == "log"
-    assert kwargs["json"]["event"]["message"] == "Hello"
-    assert kwargs["json"]["event"]["context"]["service"] == "api"
-    assert kwargs["json"]["event"]["context"]["environment"] == "production"
-    assert kwargs["json"]["event"]["context"]["release"] == "2026.04.22"
-    assert kwargs["json"]["event"]["context"]["repository"] == "acme/checkout"
-    assert kwargs["json"]["event"]["context"]["commit_sha"] == "abc1234"
-    assert kwargs["json"]["event"]["context"]["branch"] == "main"
-    assert kwargs["json"]["event"]["context"]["request_id"] == "req-123"
+    assert json.loads(kwargs["content"])["event"]["event_type"] == "log"
+    assert json.loads(kwargs["content"])["event"]["message"] == "Hello"
+    assert json.loads(kwargs["content"])["event"]["context"]["service"] == "api"
+    assert json.loads(kwargs["content"])["event"]["context"]["environment"] == "production"
+    assert json.loads(kwargs["content"])["event"]["context"]["release"] == "2026.04.22"
+    assert json.loads(kwargs["content"])["event"]["context"]["repository"] == "acme/checkout"
+    assert json.loads(kwargs["content"])["event"]["context"]["commit_sha"] == "abc1234"
+    assert json.loads(kwargs["content"])["event"]["context"]["branch"] == "main"
+    assert json.loads(kwargs["content"])["event"]["context"]["request_id"] == "req-123"
     client_class.assert_called_once()
     _, client_kwargs = client_class.call_args
     assert client_kwargs["headers"]["Authorization"] == "Bearer test-token"
-    assert client_kwargs["headers"]["User-Agent"] == "logister-python/0.3.1"
+    assert client_kwargs["headers"]["User-Agent"] == "logister-python/0.4.0"
 
 
 def test_check_in_uses_check_in_root_payload() -> None:
@@ -101,7 +102,7 @@ def test_capture_metric_accepts_unit_level_and_fingerprint() -> None:
         )
 
     _, kwargs = client_instance.post.call_args
-    event = kwargs["json"]["event"]
+    event = json.loads(kwargs["content"])["event"]
     assert event["event_type"] == "metric"
     assert event["level"] == "warn"
     assert event["fingerprint"] == "metric:queue.depth"
@@ -137,7 +138,7 @@ def test_capture_span_includes_trace_timing_context() -> None:
         )
 
     _, kwargs = client_instance.post.call_args
-    event = kwargs["json"]["event"]
+    event = json.loads(kwargs["content"])["event"]
     assert event["event_type"] == "span"
     assert event["message"] == "GET /checkout"
     assert event["trace_id"] == "trace-123"
@@ -235,7 +236,7 @@ def test_capture_exception_includes_python_traceback_frames() -> None:
             client.capture_exception(exc)
 
     _, kwargs = client_instance.post.call_args
-    exception = kwargs["json"]["event"]["context"]["exception"]
+    exception = json.loads(kwargs["content"])["event"]["context"]["exception"]
     assert exception["class"] == "RuntimeError"
     assert exception["message"] == "checkout failed"
     assert exception["qualified_class"] == "builtins.RuntimeError"
@@ -245,9 +246,9 @@ def test_capture_exception_includes_python_traceback_frames() -> None:
     assert exception["frames"][-1]["locals"]["order_id"] == "'ord_123'"
     assert exception["cause"]["class"] == "ValueError"
     assert exception["cause"]["message"] == "broken checkout"
-    assert kwargs["json"]["event"]["context"]["runtime"] == "python"
-    assert "python_version" in kwargs["json"]["event"]["context"]
-    assert "hostname" in kwargs["json"]["event"]["context"]
+    assert json.loads(kwargs["content"])["event"]["context"]["runtime"] == "python"
+    assert "python_version" in json.loads(kwargs["content"])["event"]["context"]
+    assert "hostname" in json.loads(kwargs["content"])["event"]["context"]
 
 
 def test_logging_handler_captures_log_records() -> None:

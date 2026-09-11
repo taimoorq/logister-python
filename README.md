@@ -521,3 +521,73 @@ Verify both release surfaces:
 curl -fsSL https://pypi.org/pypi/logister-python/json | jq -r .info.version
 gh release view vX.Y.Z
 ```
+
+
+### Dependency verification
+
+The package retains bounded runtime/framework ranges. CI and release builds use
+`requirements/ci.txt` for reproducible tooling and extra dependencies across
+Python 3.11–3.14; markers keep Django 5.2 on Python 3.11 and Django 6.1 on newer
+runtimes. Weekly CI resolves the declared ranges afresh, then audits and tests
+all extras together so new upstream releases are noticed even before lock updates.
+
+Regenerate the constraints with `uv` 0.12.13 and review the resulting diff:
+
+```bash
+uv pip compile pyproject.toml requirements/tooling.in --all-extras --universal --python-version 3.11 --no-annotate --output-file requirements/ci.txt
+python -m pip install -c requirements/ci.txt -e '.[dev,fastapi,celery,django,flask]' pip-audit hatchling
+python -m pip_audit
+python -m pytest
+python -m build --no-isolation
+```
+
+Constraints apply to maintainer checks and builds; they do not replace the
+supported dependency ranges installed by SDK consumers.
+
+
+### Coordinated release preparation
+
+For a coordinated ecosystem release, keep the version-changing PR unmerged until
+the final agreed Rails PR has been published and its deployment verified. Recheck
+the upstream contract/workflow pin against that final backend commit before merge.
+Successful source CI, a tag, or a release-impact dispatch alone is not backend readiness.
+After independent review, merging the new version runs CI, creates an immutable tag,
+and explicitly dispatches publication. A tag without a package remains incomplete.
+
+To recover an existing reviewed tag, dispatch the publisher workflow from `main`
+with `-f tag=vX.Y.Z` (Python uses `publish.yml`; other SDKs use `release.yml`). The
+workflow checks out that exact tag, proves it belongs to main, and verifies public
+package identity before creating the GitHub Release. Never move a consumed tag.
+
+Weekly CI audits/tests current dependencies and cannot trigger automatic publication.
+Dependabot groups compatible minor/patch updates; major toolchain migrations keep
+separate PRs. Pin Actions to full commits and retain supported runtime floors.
+
+
+### Reliable event delivery
+
+```python
+from logister import LogisterClient, RetryPolicy
+
+client = LogisterClient(api_key="your-project-ingest-key", retry_policy=RetryPolicy())
+event = client.prepare_event(event_type="log", level="info", message="Job started")
+client.send_prepared_event(event)
+results = client.send_events([event])
+for result in results:
+    if result.error is not None:
+        print(result.event_id, type(result.error).__name__)
+```
+
+Each capture serializes its UUID, timestamp and context before the first request.
+Retain a `PreparedEvent` to replay it without creating another logical event.
+Ingestion retries network errors, 408/425/429 and transient 5xx up to three attempts;
+`Retry-After` is capped at five seconds. `maximum_attempts=1` disables retries.
+The 15-second default retry budget is shared across a batch call, including splits
+and fallback. HTTP phase timeouts also apply; synchronous HTTP calls can overrun
+that budget until their current phase timeout expires. Interrupts propagate.
+
+Batch calls accept at most 1,000 prepared events or dictionaries matching
+`prepare_event`, send at most 100 per HTTP request, and return one ordered result
+per event. Failed/unsent events remain visible after a timeout or rejection.
+HTTP acceptance means durable ingestion, not completed projection or symbolication.
+Deployments and dedicated check-ins retain their single-request behavior.

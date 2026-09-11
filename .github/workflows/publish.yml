@@ -8,11 +8,14 @@ on:
     inputs:
       tag:
         description: Existing release tag to publish, for example v0.3.0.
-        required: false
+        required: true
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -22,7 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Verify immutable tag belongs to reviewed main
+        run: bash scripts/verify-release-ref.sh
+
       - name: Check public repository safety
         run: bash scripts/publication-safety-check.sh
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -57,8 +64,11 @@ jobs:
           test -s release-notes.md
       - name: Build distributions
         run: |
-          python -m pip install --upgrade pip build
-          python -m build
+          python -m pip install --upgrade pip
+          python -m pip install -c requirements/ci.txt '.[dev,fastapi,celery,django,flask]' pip-audit hatchling
+          python -m pip_audit
+          python -m pytest
+          python -m build --no-isolation
       - name: Inspect distribution file lists
         run: |
           python <<'PY'
@@ -108,15 +118,15 @@ jobs:
           TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           version="${TAG_NAME#v}"
-          if curl --fail --silent "https://pypi.org/pypi/logister-python/${version}/json" >/dev/null; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "logister-python ${version} already exists on PyPI."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          status="$(curl --silent --show-error --location --output /dev/null --write-out '%{http_code}' "https://pypi.org/pypi/logister-python/${version}/json")"
+          case "$status" in
+            200) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::PyPI lookup failed with HTTP $status; publication state is unknown."; exit 1 ;;
+          esac
       - name: Publish package distributions to PyPI
         if: steps.pypi_package.outputs.exists != 'true'
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
       - name: Verify PyPI publication
         env:
           TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
@@ -151,7 +161,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.tag || github.ref }}
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

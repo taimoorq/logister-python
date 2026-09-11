@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  schedule:
+    - cron: "23 8 * * 1"
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -13,15 +16,24 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test release recovery controls
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
       - name: Check public repository safety
         run: bash scripts/publication-safety-check.sh
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           python -m pip install --upgrade pip 'setuptools>=83'
-          python -m pip install -e .[dev,fastapi,celery,django,flask] pip-audit
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            python -m pip install -e '.[dev,fastapi,celery,django,flask]' pip-audit
+          else
+            python -m pip install -c requirements/ci.txt -e '.[dev,fastapi,celery,django,flask]' pip-audit
+          fi
       - name: Audit dependencies
         run: python -m pip_audit
       - name: Validate release metadata

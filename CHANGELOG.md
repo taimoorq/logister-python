@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.0 - 2026-09-11
+
+- Added immutable prepared events with stable UUIDs and capture timestamps, ingestion-only bounded retries, Retry-After handling, and retained snapshots for explicit replay.
+- Added bounded gzip/NDJSON batches, deterministic batch IDs, 413 splitting, legacy endpoint fallback, and ordered outcomes for every event, including failures.
+- Added reproducible dependency constraints across Python 3.11–3.14, real installed-framework smoke tests, and weekly fresh dependency resolution/auditing.
+- Restored explicit publication dispatch and exact-tag recovery while preserving the PyPI trusted publisher identity.
+
 All notable changes to this project will be documented in this file.
 
 ## v0.3.1 - 2026-08-09
