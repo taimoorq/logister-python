@@ -20,3 +20,7 @@ __all__ = [
     "LogisterMiddleware",
     "build_django_middleware",
 ]
+
+from .tracing import TraceContext, current_trace_context, trace_scope, outbound_trace_context
+
+__all__ += ["TraceContext", "current_trace_context", "trace_scope", "outbound_trace_context"]

@@ -5,88 +5,76 @@ from time import perf_counter
 from typing import Any, Callable
 
 from .client import LogisterClient
+from .tracing import TraceContext, trace_scope
+from inspect import iscoroutinefunction
 
 TransactionNamer = Callable[[Any], str]
 
 
 class LogisterMiddleware:
-    def __init__(
-        self,
-        get_response: Callable[[Any], Any],
-        *,
-        client: LogisterClient | None = None,
-        transaction_namer: TransactionNamer | None = None,
-        capture_spans: bool = False,
-    ) -> None:
+    sync_capable = True
+    async_capable = True
+
+    def __init__(self, get_response, *, client=None, transaction_namer=None, capture_spans=False):
         self.get_response = get_response
         self.client = client or LogisterClient.from_env()
         self.transaction_namer = transaction_namer
         self.capture_spans = capture_spans
+        self.is_async = iscoroutinefunction(get_response)
+        if self.is_async:
+            from asgiref.sync import markcoroutinefunction
+            markcoroutinefunction(self)
 
-    def __call__(self, request: Any) -> Any:
-        started_at = perf_counter()
-        request._logister_started_at = started_at
+    def _start(self, request):
+        request._logister_trace = TraceContext.from_headers(_header(request, "HTTP_TRACEPARENT"), _request_id(request), _header(request, "HTTP_X_TRACE_ID"))
+        request._logister_started_at = perf_counter()
         request._logister_started_at_wall = datetime.now(UTC)
-        request._logister_transaction_name = _transaction_name(request, self.transaction_namer)
+        request._logister_recorded = False
+        return request._logister_trace
 
-        response = self.get_response(request)
+    def __call__(self, request):
+        if self.is_async:
+            return self._async_call(request)
+        with trace_scope(self._start(request)):
+            try:
+                response = self.get_response(request)
+            except Exception as error:
+                self.process_exception(request, error)
+                raise
+            self._record(request, getattr(response, "status_code", None))
+            if hasattr(response, "headers"):
+                response.headers["x-request-id"] = request._logister_trace.request_id
+            return response
 
-        duration_ms = (perf_counter() - started_at) * 1000.0
-        status_code = getattr(response, "status_code", None)
-        context = _request_context(request, status_code=status_code)
-        self.client.capture_transaction(
-            request._logister_transaction_name,
-            duration_ms,
-            context=context,
-            trace_id=_header(request, "HTTP_X_TRACE_ID"),
-            request_id=_request_id(request),
-        )
+    async def _async_call(self, request):
+        with trace_scope(self._start(request)):
+            try:
+                response = await self.get_response(request)
+            except Exception as error:
+                self.process_exception(request, error)
+                raise
+            self._record(request, getattr(response, "status_code", None))
+            response.headers["x-request-id"] = request._logister_trace.request_id
+            return response
+
+    def _record(self, request, status):
+        if getattr(request, "_logister_recorded", False):
+            return
+        trace = getattr(request, "_logister_trace", None) or self._start(request)
+        duration_ms = (perf_counter() - request._logister_started_at) * 1000
+        name = _transaction_name(request, self.transaction_namer)
+        context = {**_request_context(request, status_code=status), **trace.fields()}
+        self.client.capture_transaction(name, duration_ms, context=context, trace_id=trace.trace_id, request_id=trace.request_id)
         if self.capture_spans:
-            self.client.capture_span(
-                request._logister_transaction_name,
-                duration_ms,
-                context=context,
-                trace_id=_header(request, "HTTP_X_TRACE_ID") or _request_id(request),
-                request_id=_request_id(request),
-                kind="server",
-                status="error" if status_code and status_code >= 500 else "ok",
-                started_at=request._logister_started_at_wall,
-                ended_at=datetime.now(UTC),
-            )
-        return response
+            self.client.capture_span(name, duration_ms, context=context, **trace.fields(), kind="server",
+                status="error" if status and status >= 500 else "ok", started_at=request._logister_started_at_wall, ended_at=datetime.now(UTC))
+        request._logister_recorded = True
 
-    def process_exception(self, request: Any, exception: BaseException) -> None:
-        started_at = getattr(request, "_logister_started_at", None)
-        started_wall = getattr(request, "_logister_started_at_wall", None)
-        transaction_name = getattr(request, "_logister_transaction_name", _transaction_name(request, self.transaction_namer))
-        duration_ms = (perf_counter() - started_at) * 1000.0 if started_at is not None else 0.0
-        context = _request_context(request, status_code=500)
-
-        self.client.capture_transaction(
-            transaction_name,
-            duration_ms,
-            context=context,
-            trace_id=_header(request, "HTTP_X_TRACE_ID"),
-            request_id=_request_id(request),
-        )
-        if self.capture_spans:
-            self.client.capture_span(
-                transaction_name,
-                duration_ms,
-                context=context,
-                trace_id=_header(request, "HTTP_X_TRACE_ID") or _request_id(request),
-                request_id=_request_id(request),
-                kind="server",
-                status="error",
-                started_at=started_wall,
-                ended_at=datetime.now(UTC),
-            )
-        self.client.capture_exception(
-            exception,
-            context=context,
-            trace_id=_header(request, "HTTP_X_TRACE_ID"),
-            request_id=_request_id(request),
-        )
+    def process_exception(self, request, exception):
+        self._record(request, 500)
+        trace = request._logister_trace
+        self.client.capture_exception(exception, context={**_request_context(request, status_code=500), **trace.fields()},
+            trace_id=trace.trace_id, request_id=trace.request_id)
         return None
 
 
