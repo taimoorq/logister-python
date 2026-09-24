@@ -5,6 +5,7 @@ from time import perf_counter
 from typing import Any, Callable
 
 from .client import LogisterClient
+from .tracing import TraceContext, _current
 
 TransactionNamer = Callable[[Any], str]
 
@@ -27,6 +28,9 @@ def instrument_flask(
     @app.before_request
     def logister_before_request() -> None:
         g, request = _flask_state()
+        trace = TraceContext.from_headers(_header(request, "traceparent"), _header(request, "X-Request-Id"), _header(request, "X-Trace-Id"))
+        g._logister_trace = trace
+        g._logister_trace_token = _current.set(trace)
         g._logister_started_at = perf_counter()
         g._logister_started_at_wall = datetime.now(UTC)
         g._logister_transaction_name = _transaction_name(request, transaction_namer)
@@ -44,30 +48,45 @@ def instrument_flask(
             getattr(g, "_logister_transaction_name", _transaction_name(request, transaction_namer)),
             duration_ms,
             context=context,
-            trace_id=_header(request, "X-Trace-Id"),
-            request_id=_header(request, "X-Request-Id"),
+            trace_id=g._logister_trace.trace_id,
+            request_id=g._logister_trace.request_id,
         )
         if capture_spans:
             client.capture_span(
                 getattr(g, "_logister_transaction_name", _transaction_name(request, transaction_namer)),
                 duration_ms,
                 context=context,
-                trace_id=_header(request, "X-Trace-Id") or _header(request, "X-Request-Id"),
-                request_id=_header(request, "X-Request-Id"),
+                trace_id=g._logister_trace.trace_id,
+                request_id=g._logister_trace.request_id,
+                span_id=g._logister_trace.span_id, parent_span_id=g._logister_trace.parent_span_id,
                 kind="server",
                 status="error" if status_code and status_code >= 500 else "ok",
                 started_at=getattr(g, "_logister_started_at_wall", None),
                 ended_at=datetime.now(UTC),
             )
         g._logister_transaction_recorded = True
+        if hasattr(response, "headers"):
+            response.headers["x-request-id"] = g._logister_trace.request_id
         return response
 
     @app.teardown_request
     def logister_teardown_request(exception: BaseException | None) -> None:
+        g, _ = _flask_state()
+        try:
+            record_teardown(exception)
+        finally:
+            token = getattr(g, "_logister_trace_token", None)
+            if token is not None:
+                _current.reset(token)
+                del g._logister_trace_token
+
+    def record_teardown(exception):
         if exception is None:
             return None
 
         g, request = _flask_state()
+        if not hasattr(g, "_logister_trace"):
+            g._logister_trace = TraceContext.from_headers(_header(request, "traceparent"), _header(request, "X-Request-Id"), _header(request, "X-Trace-Id"))
         if not getattr(g, "_logister_transaction_recorded", False):
             context = _request_context(request, status_code=500)
             duration_ms = _duration_ms(getattr(g, "_logister_started_at", None))
@@ -75,16 +94,17 @@ def instrument_flask(
                 getattr(g, "_logister_transaction_name", _transaction_name(request, transaction_namer)),
                 duration_ms,
                 context=context,
-                trace_id=_header(request, "X-Trace-Id"),
-                request_id=_header(request, "X-Request-Id"),
+                trace_id=g._logister_trace.trace_id,
+                request_id=g._logister_trace.request_id,
             )
             if capture_spans:
                 client.capture_span(
                     getattr(g, "_logister_transaction_name", _transaction_name(request, transaction_namer)),
                     duration_ms,
                     context=context,
-                    trace_id=_header(request, "X-Trace-Id") or _header(request, "X-Request-Id"),
-                    request_id=_header(request, "X-Request-Id"),
+                    trace_id=g._logister_trace.trace_id,
+                    request_id=g._logister_trace.request_id,
+                    span_id=g._logister_trace.span_id, parent_span_id=g._logister_trace.parent_span_id,
                     kind="server",
                     status="error",
                     started_at=getattr(g, "_logister_started_at_wall", None),
@@ -98,8 +118,8 @@ def instrument_flask(
         client.capture_exception(
             exception,
             context=_request_context(request, status_code=500),
-            trace_id=_header(request, "X-Trace-Id"),
-            request_id=_header(request, "X-Request-Id"),
+            trace_id=g._logister_trace.trace_id,
+            request_id=g._logister_trace.request_id,
         )
         g._logister_exception_reported = True
         return None

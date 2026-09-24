@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .tracing import current_trace_context
+
 import os
 import json
 import time
@@ -32,7 +34,7 @@ class LogisterClient:
     branch: str | None = None
     default_context: Mapping[str, Any] | None = None
     capture_locals: bool = False
-    user_agent: str = "logister-python/0.4.0"
+    user_agent: str = "logister-python/0.5.0"
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
 
@@ -226,7 +228,10 @@ class LogisterClient:
         ended_at: str | datetime | None = None,
     ) -> dict[str, Any]:
         span_id = span_id or secrets.token_hex(8)
-        trace_id = trace_id or span_id
+        active = current_trace_context()
+        trace_id = trace_id or (active.trace_id if active else secrets.token_hex(16))
+        request_id = request_id or (active.request_id if active else None)
+        parent_span_id = parent_span_id or (active.span_id if active and span_id != active.span_id else None)
         span_context = dict(context or {})
         span_context.setdefault("name", name)
         span_context.setdefault("trace_id", trace_id)
@@ -662,6 +667,10 @@ class LogisterClient:
         self._set_if_missing(merged, "started_at", self._normalize_timestamp(started_at) if started_at else None)
         self._set_if_missing(merged, "ended_at", self._normalize_timestamp(ended_at) if ended_at else None)
 
+        active = current_trace_context()
+        if active:
+            for key, value in active.fields().items():
+                self._set_if_missing(merged, key, value)
         return merged
 
     def _normalize_timestamp(self, value: str | datetime | None) -> str:

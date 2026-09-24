@@ -591,3 +591,39 @@ Batch calls accept at most 1,000 prepared events or dictionaries matching
 per event. Failed/unsent events remain visible after a timeout or rejection.
 HTTP acceptance means durable ingestion, not completed projection or symbolication.
 Deployments and dedicated check-ins retain their single-request behavior.
+
+## Request correlation (0.5.0+)
+
+Django (sync and async), Flask, and FastAPI integrations establish a task-local
+request scope. Automatic and manual captures share the local server identity;
+strict W3C version 00 incoming headers preserve their remote parent and flags.
+
+```python
+import httpx
+from logister import outbound_trace_context
+
+trace = outbound_trace_context()
+response = httpx.get(
+    "https://api.example.test/orders",
+    headers=trace.headers_for("https://api.example.test/orders", allowed_origins=["https://api.example.test"]),
+    follow_redirects=False,
+)
+if response.status_code >= 500:
+    client.capture_exception(RuntimeError("Order request failed"), context=trace.fields())
+```
+
+`current_trace_context()` returns the immutable current handle. The outbound
+helper prepares headers; it does not send a request or automatically record an
+HTTP span. Recheck the destination on every redirect and exclude SDK export and
+token-issuer traffic. Queue propagation remains explicit.
+
+A linked-project lookup also requires Logister 3.7+, the instance flag
+`LOGISTER_CROSS_PROJECT_CORRELATIONS=true`, and explicit project/environment
+connections under Settings → Integrations → Connected projects. Enable related
+requests on both projects. A connection never grants project access.
+
+Use the returned request handle when reporting a handled HTTP failure later.
+Do not attach the most recent request to an unrelated crash or OS diagnostic.
+Configure each app's own `release` and `environment`; mobile and backend releases
+are independent. The backend shows exact identifier evidence and retention gaps.
+See the [request correlation guide](https://logister.org/docs/request-correlation/).

@@ -5,6 +5,7 @@ from time import perf_counter
 from typing import Any, Callable
 
 from .client import LogisterClient
+from .tracing import TraceContext, trace_scope
 
 TransactionNamer = Callable[[Any], str]
 
@@ -21,11 +22,16 @@ def instrument_fastapi(
 
     @app.middleware("http")
     async def logister_middleware(request: Any, call_next: Callable[[Any], Any]) -> Any:
+        trace = TraceContext.from_headers(_header(request, "traceparent"), _header(request, "x-request-id"), _header(request, "x-trace-id"))
+        with trace_scope(trace):
+            return await process_request(request, call_next, trace)
+
+    async def process_request(request, call_next, trace):
         started_at = perf_counter()
         started_wall = datetime.now(UTC)
         name = _transaction_name(request, transaction_namer)
-        trace_id = _header(request, "x-trace-id")
-        request_id = _header(request, "x-request-id")
+        trace_id = trace.trace_id
+        request_id = trace.request_id
 
         try:
             response = await call_next(request)
@@ -46,6 +52,7 @@ def instrument_fastapi(
                     context=context,
                     trace_id=trace_id or request_id,
                     request_id=request_id,
+                    span_id=trace.span_id, parent_span_id=trace.parent_span_id,
                     kind="server",
                     status="error",
                     started_at=started_wall,
@@ -76,11 +83,14 @@ def instrument_fastapi(
                 context=context,
                 trace_id=trace_id or request_id,
                 request_id=request_id,
+                span_id=trace.span_id, parent_span_id=trace.parent_span_id,
                 kind="server",
                 status="error" if status_code and status_code >= 500 else "ok",
                 started_at=started_wall,
                 ended_at=datetime.now(UTC),
             )
+        if hasattr(response, "headers"):
+            response.headers["x-request-id"] = trace.request_id
         return response
 
     app.state._logister_fastapi_installed = True

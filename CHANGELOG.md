@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.0 - 2026-09-24
+
+- Propagate task-local request context through Django, Flask, and FastAPI, including async Django handlers.
+- Add immutable request handles and outbound header helpers with strict W3C parsing and exact-origin allowlists.
+
 ## v0.4.0 - 2026-09-11
 
 - Added immutable prepared events with stable UUIDs and capture timestamps, ingestion-only bounded retries, Retry-After handling, and retained snapshots for explicit replay.

@@ -55,7 +55,7 @@ def test_send_event_wraps_payload_and_sets_auth_header() -> None:
     client_class.assert_called_once()
     _, client_kwargs = client_class.call_args
     assert client_kwargs["headers"]["Authorization"] == "Bearer test-token"
-    assert client_kwargs["headers"]["User-Agent"] == "logister-python/0.4.0"
+    assert client_kwargs["headers"]["User-Agent"] == "logister-python/0.5.0"
 
 
 def test_check_in_uses_check_in_root_payload() -> None:
@@ -569,6 +569,7 @@ def test_flask_instrumentation_captures_transaction() -> None:
         instrument_flask(app, client)
         app.before_request_funcs[0]()
         response = app.after_request_funcs[0](FakeResponse(status_code=204))
+        app.teardown_request_funcs[0](None)
 
     assert response.status_code == 204
     client.capture_transaction.assert_called_once()
@@ -597,6 +598,7 @@ def test_flask_instrumentation_can_capture_request_span() -> None:
         instrument_flask(app, client, capture_spans=True)
         app.before_request_funcs[0]()
         app.after_request_funcs[0](FakeResponse(status_code=204))
+        app.teardown_request_funcs[0](None)
 
     client.capture_span.assert_called_once()
     args, kwargs = client.capture_span.call_args
