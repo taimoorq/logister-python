@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from functools import wraps
 from time import perf_counter
 from typing import Any, Callable
 
+from ._guard import safely
 from .client import LogisterClient
 
 MonitorSlugFactory = Callable[[Any], str | None]
@@ -21,6 +23,7 @@ def instrument_celery(
 
     signals = signals_module or _import_celery_signals()
     started_at: dict[str, float] = {}
+    capture_hostname = getattr(client, "capture_hostname", False) is True
 
     def on_task_prerun(
         sender: Any = None,
@@ -45,9 +48,10 @@ def instrument_celery(
     ) -> None:
         task_name = _task_name(sender, task)
         duration_ms = _duration_ms(started_at.pop(task_id, None))
-        context = _task_context(task_name, task_id, task, args, kwargs, state=state, retval=retval)
+        context = _task_context(task_name, task_id, task, args, kwargs, state=state, retval=retval, hostname=capture_hostname)
 
-        client.capture_transaction(
+        safely(
+            client.capture_transaction,
             task_name,
             duration_ms,
             context=context,
@@ -81,7 +85,7 @@ def instrument_celery(
         task_name = _task_name(sender, None)
         client.capture_exception(
             exception,
-            context=_task_context(task_name, task_id, None, args, kwargs, state="FAILURE"),
+            context=_task_context(task_name, task_id, None, args, kwargs, state="FAILURE", hostname=capture_hostname),
             request_id=task_id,
             fingerprint=task_name,
         )
@@ -104,15 +108,24 @@ def instrument_celery(
             request_id=task_id,
         )
 
-    signals.task_prerun.connect(on_task_prerun, weak=False)
-    signals.task_postrun.connect(on_task_postrun, weak=False)
-    signals.task_failure.connect(on_task_failure, weak=False)
+    signals.task_prerun.connect(_guarded(on_task_prerun), weak=False)
+    signals.task_postrun.connect(_guarded(on_task_postrun), weak=False)
+    signals.task_failure.connect(_guarded(on_task_failure), weak=False)
     if capture_retries:
-        signals.task_retry.connect(on_task_retry, weak=False)
+        signals.task_retry.connect(_guarded(on_task_retry), weak=False)
 
     celery_app._logister_celery_installed = True
     celery_app.logister_client = client
     return celery_app
+
+
+def _guarded(handler: Callable[..., None]) -> Callable[..., None]:
+    @wraps(handler)
+    def receiver(*args: Any, **kwargs: Any) -> None:
+        # Signal kwargs are arbitrary, so bind them here rather than through safely().
+        safely(lambda: handler(*args, **kwargs))
+
+    return receiver
 
 
 def _import_celery_signals() -> Any:
@@ -147,6 +160,7 @@ def _task_context(
     *,
     state: str | None = None,
     retval: Any = None,
+    hostname: bool = False,
 ) -> dict[str, Any]:
     context: dict[str, Any] = {
         "framework": "celery",
@@ -175,7 +189,7 @@ def _task_context(
     eta = getattr(getattr(task, "request", None), "eta", None)
     if eta is not None:
         context["eta"] = str(eta)
-    hostname = getattr(getattr(task, "request", None), "hostname", None)
-    if hostname:
-        context["hostname"] = hostname
+    worker_hostname = getattr(getattr(task, "request", None), "hostname", None) if hostname else None
+    if worker_hostname:
+        context["hostname"] = worker_hostname
     return context

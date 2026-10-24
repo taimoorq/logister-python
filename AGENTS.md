@@ -14,6 +14,16 @@ telemetry, customer data, or artifacts containing local configuration.
 - Keep pip and GitHub Actions Dependabot updates enabled. Pin Actions to full
   commit SHAs and retain a readable version comment.
 
+## SDK safety rules
+
+- Automatic captures (framework integrations, Celery signals, the logging
+  handler) must never raise into the host application. Route them through
+  `logister._guard.safely` and re-raise only the application's own exception.
+- Do not block an event loop on delivery; use `deferred_delivery()` there.
+- `src/logister/redaction.py` implements the default redaction spec shared with
+  the other Logister SDKs. Change its key list or value rules only together with
+  those SDKs. Apply it to captured data, never to SDK envelope fields.
+
 ## Verification
 
 Run before handoff or release:

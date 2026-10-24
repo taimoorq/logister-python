@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Callable
 
+from ._guard import captures_client_ip, safely
 from .client import LogisterClient
 from .tracing import TraceContext, trace_scope
 
@@ -29,69 +30,54 @@ def instrument_fastapi(
     async def process_request(request, call_next, trace):
         started_at = perf_counter()
         started_wall = datetime.now(UTC)
-        name = _transaction_name(request, transaction_namer)
-        trace_id = trace.trace_id
-        request_id = trace.request_id
+        name = safely(_transaction_name, request, transaction_namer) or _default_name(request)
 
         try:
             response = await call_next(request)
         except Exception as exc:
-            duration_ms = (perf_counter() - started_at) * 1000.0
-            context = _request_context(request, status_code=500)
-            client.capture_transaction(
-                name,
-                duration_ms,
-                context=context,
-                trace_id=trace_id,
-                request_id=request_id,
-            )
-            if capture_spans:
-                client.capture_span(
-                    name,
-                    duration_ms,
-                    context=context,
-                    trace_id=trace_id or request_id,
-                    request_id=request_id,
-                    span_id=trace.span_id, parent_span_id=trace.parent_span_id,
-                    kind="server",
-                    status="error",
-                    started_at=started_wall,
-                    ended_at=datetime.now(UTC),
-                )
-            client.capture_exception(
-                exc,
-                context=context,
-                trace_id=trace_id,
-                request_id=request_id,
-            )
+            safely(record, request, name, trace, started_at, started_wall, 500, exc, defer=True)
             raise
 
-        duration_ms = (perf_counter() - started_at) * 1000.0
-        status_code = getattr(response, "status_code", None)
-        context = _request_context(request, status_code=status_code)
-        client.capture_transaction(
-            name,
-            duration_ms,
-            context=context,
-            trace_id=trace_id,
-            request_id=request_id,
-        )
-        if capture_spans:
-            client.capture_span(
-                name,
-                duration_ms,
-                context=context,
-                trace_id=trace_id or request_id,
-                request_id=request_id,
-                span_id=trace.span_id, parent_span_id=trace.parent_span_id,
-                kind="server",
-                status="error" if status_code and status_code >= 500 else "ok",
-                started_at=started_wall,
-                ended_at=datetime.now(UTC),
-            )
+        safely(record, request, name, trace, started_at, started_wall, getattr(response, "status_code", None), None, defer=True)
         if hasattr(response, "headers"):
             response.headers["x-request-id"] = trace.request_id
         return response
+
+    def record(request, name, trace, started_at, started_wall, status_code, exc):
+        # Events are prepared on the request task; delivery runs on a background thread.
+        duration_ms = (perf_counter() - started_at) * 1000.0
+        context = _request_context(request, status_code=status_code, client_ip=captures_client_ip(client))
+        safely(
+            client.capture_transaction,
+            name,
+            duration_ms,
+            context=context,
+            trace_id=trace.trace_id,
+            request_id=trace.request_id,
+        )
+        if capture_spans:
+            failed = exc is not None or bool(status_code and status_code >= 500)
+            safely(
+                client.capture_span,
+                name,
+                duration_ms,
+                context=context,
+                trace_id=trace.trace_id or trace.request_id,
+                request_id=trace.request_id,
+                span_id=trace.span_id, parent_span_id=trace.parent_span_id,
+                kind="server",
+                status="error" if failed else "ok",
+                started_at=started_wall,
+                ended_at=datetime.now(UTC),
+            )
+        if exc is not None:
+            safely(
+                client.capture_exception,
+                exc,
+                context=context,
+                trace_id=trace.trace_id,
+                request_id=trace.request_id,
+            )
 
     app.state._logister_fastapi_installed = True
     app.state.logister_client = client
@@ -101,11 +87,15 @@ def instrument_fastapi(
 def _transaction_name(request: Any, transaction_namer: TransactionNamer | None) -> str:
     if transaction_namer is not None:
         return transaction_namer(request)
-    return f"{request.method} {request.url.path}"
+    return _default_name(request)
 
 
-def _request_context(request: Any, *, status_code: int | None) -> dict[str, Any]:
-    client_host = getattr(getattr(request, "client", None), "host", None)
+def _default_name(request: Any) -> str:
+    return f"{getattr(request, 'method', 'GET')} {getattr(getattr(request, 'url', None), 'path', '/')}"
+
+
+def _request_context(request: Any, *, status_code: int | None, client_ip: bool = False) -> dict[str, Any]:
+    client_host = getattr(getattr(request, "client", None), "host", None) if client_ip else None
     query = getattr(request.url, "query", "")
     scope = getattr(request, "scope", None)
     route_obj = scope.get("route") if isinstance(scope, dict) else None
@@ -114,7 +104,7 @@ def _request_context(request: Any, *, status_code: int | None) -> dict[str, Any]
     headers = {
         _header_name(key): value
         for key in ("host", "user-agent", "accept", "x-forwarded-for", "x-request-id", "x-trace-id")
-        if (value := _header(request, key))
+        if (value := _header(request, key)) and (client_ip or key != "x-forwarded-for")
     }
 
     context = {
