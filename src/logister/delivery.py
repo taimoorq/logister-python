@@ -5,11 +5,18 @@ from email.utils import parsedate_to_datetime
 import gzip
 import hashlib
 import json
+import logging
+import os
+import queue
+import threading
 import time
+import weakref
 from uuid import UUID
 from typing import Any
 
 import httpx
+
+_logger = logging.getLogger("logister")
 
 
 class LogisterError(RuntimeError):
@@ -141,3 +148,75 @@ def deliver_batch(events, send):
     for start in range(0, len(events), 100):
         chunk(events[start:start + 100])
     return results
+
+
+class BackgroundDelivery:
+    """One daemon thread with a bounded queue, recreated after fork.
+
+    Used where blocking the caller would stall other work (an event loop thread).
+    Jobs that fail are logged at debug and dropped; a full queue drops new jobs.
+    """
+
+    def __init__(self, maxsize: int = 1_000):
+        self._maxsize = maxsize
+        self._reset()
+        _background_workers.add(self)
+
+    def _reset(self):
+        # Also run in a forked child, where the parent's lock may be held and its thread is gone.
+        self._lock = threading.Lock()
+        self._pid = None
+        self._queue = None
+        self._thread = None
+
+    def submit(self, job) -> bool:
+        with self._lock:
+            if self._pid != os.getpid() or self._thread is None or not self._thread.is_alive():
+                self._queue = queue.Queue(self._maxsize)
+                self._thread = threading.Thread(target=self._run, args=(self._queue,), name="logister-delivery", daemon=True)
+                self._pid = os.getpid()
+                self._thread.start()
+            work = self._queue
+        try:
+            work.put_nowait(job)
+            return True
+        except queue.Full:
+            _logger.debug("Logister background queue is full; dropping event")
+            return False
+
+    def flush(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for queued jobs; return True when drained."""
+        work = self._queue
+        if work is None or self._pid != os.getpid():
+            return True
+        deadline = time.monotonic() + timeout
+        with work.all_tasks_done:
+            while work.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                work.all_tasks_done.wait(remaining)
+        return True
+
+    @staticmethod
+    def _run(work):
+        while True:
+            job = work.get()
+            try:
+                job()
+            except Exception:
+                _logger.debug("Logister background delivery failed", exc_info=True)
+            finally:
+                work.task_done()
+
+
+_background_workers: "weakref.WeakSet[BackgroundDelivery]" = weakref.WeakSet()
+
+
+def _reset_background_workers_in_child():
+    for worker in list(_background_workers):
+        worker._reset()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_background_workers_in_child)

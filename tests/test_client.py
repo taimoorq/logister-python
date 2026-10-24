@@ -55,7 +55,7 @@ def test_send_event_wraps_payload_and_sets_auth_header() -> None:
     client_class.assert_called_once()
     _, client_kwargs = client_class.call_args
     assert client_kwargs["headers"]["Authorization"] == "Bearer test-token"
-    assert client_kwargs["headers"]["User-Agent"] == "logister-python/0.5.0"
+    assert client_kwargs["headers"]["User-Agent"] == "logister-python/0.6.0"
 
 
 def test_check_in_uses_check_in_root_payload() -> None:
@@ -248,14 +248,15 @@ def test_capture_exception_includes_python_traceback_frames() -> None:
     assert exception["cause"]["message"] == "broken checkout"
     assert json.loads(kwargs["content"])["event"]["context"]["runtime"] == "python"
     assert "python_version" in json.loads(kwargs["content"])["event"]["context"]
-    assert "hostname" in json.loads(kwargs["content"])["event"]["context"]
+    assert "hostname" not in json.loads(kwargs["content"])["event"]["context"]
+    assert "runtime_name" not in json.loads(kwargs["content"])["event"]["context"]
 
 
 def test_logging_handler_captures_log_records() -> None:
     client = Mock(spec=LogisterClient)
     handler = LogisterLoggingHandler(client, context={"service": "api"})
 
-    logger = logging.getLogger("logister.tests.messages")
+    logger = logging.getLogger("app.tests.messages")
     logger.handlers = []
     logger.propagate = False
     logger.setLevel(logging.INFO)
@@ -269,7 +270,7 @@ def test_logging_handler_captures_log_records() -> None:
     assert kwargs["request_id"] == "req-501"
     assert kwargs["trace_id"] == "trace-501"
     assert kwargs["context"]["service"] == "api"
-    assert kwargs["context"]["logger_name"] == "logister.tests.messages"
+    assert kwargs["context"]["logger_name"] == "app.tests.messages"
     assert kwargs["context"]["logger"]["function"] == "test_logging_handler_captures_log_records"
     assert kwargs["context"]["log_record"]["cache"] == "primary"
 
@@ -278,7 +279,7 @@ def test_logging_handler_captures_exceptions_from_exc_info() -> None:
     client = Mock(spec=LogisterClient)
     handler = LogisterLoggingHandler(client)
 
-    logger = logging.getLogger("logister.tests.exceptions")
+    logger = logging.getLogger("app.tests.exceptions")
     logger.handlers = []
     logger.propagate = False
     logger.setLevel(logging.ERROR)
@@ -293,12 +294,12 @@ def test_logging_handler_captures_exceptions_from_exc_info() -> None:
     _, kwargs = client.capture_exception.call_args
     assert kwargs["message"] == "Task failed"
     assert kwargs["request_id"] == "task-99"
-    assert kwargs["context"]["logger_name"] == "logister.tests.exceptions"
+    assert kwargs["context"]["logger_name"] == "app.tests.exceptions"
 
 
 def test_instrument_logging_attaches_once_per_client() -> None:
     client = Mock(spec=LogisterClient)
-    logger = logging.getLogger("logister.tests.instrument")
+    logger = logging.getLogger("app.tests.instrument")
     logger.handlers = []
     logger.propagate = True
 

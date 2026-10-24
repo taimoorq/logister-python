@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from ._guard import safely
 from .client import LogisterClient
 
 _RESERVED_RECORD_ATTRS = frozenset(vars(logging.makeLogRecord({})).keys())
+# Records from the SDK and its transport would otherwise be captured and re-sent forever.
+_IGNORED_LOGGERS = ("logister", "httpx", "httpcore")
+_emitting: ContextVar[bool] = ContextVar("logister_logging_emit", default=False)
 
 
 class LogisterLoggingHandler(logging.Handler):
@@ -24,31 +30,28 @@ class LogisterLoggingHandler(logging.Handler):
         self.capture_exceptions = capture_exceptions
 
     def emit(self, record: logging.LogRecord) -> None:
+        if _emitting.get() or _is_ignored(record.name):
+            return
+        token = _emitting.set(True)
         try:
-            message = record.getMessage()
-            context = _record_context(record, self.context)
-            occurred_at = datetime.fromtimestamp(record.created, tz=timezone.utc)
-            trace_id = _record_value(record, "trace_id")
-            request_id = _record_value(record, "request_id")
-            session_id = _record_value(record, "session_id")
-            user_id = _record_value(record, "user_id")
+            # Inside an event loop, hand delivery to a background thread instead of blocking.
+            safely(self._capture, record, defer=_in_event_loop())
+        finally:
+            _emitting.reset(token)
 
-            if self.capture_exceptions and record.exc_info and record.exc_info[1] is not None:
-                self.client.capture_exception(
-                    record.exc_info[1],
-                    message=message,
-                    context=context,
-                    occurred_at=occurred_at,
-                    trace_id=trace_id,
-                    request_id=request_id,
-                    session_id=session_id,
-                    user_id=user_id,
-                )
-                return
+    def _capture(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        context = _record_context(record, self.context)
+        occurred_at = datetime.fromtimestamp(record.created, tz=timezone.utc)
+        trace_id = _record_value(record, "trace_id")
+        request_id = _record_value(record, "request_id")
+        session_id = _record_value(record, "session_id")
+        user_id = _record_value(record, "user_id")
 
-            self.client.capture_message(
-                message,
-                level=record.levelname.lower(),
+        if self.capture_exceptions and record.exc_info and record.exc_info[1] is not None:
+            self.client.capture_exception(
+                record.exc_info[1],
+                message=message,
                 context=context,
                 occurred_at=occurred_at,
                 trace_id=trace_id,
@@ -56,8 +59,18 @@ class LogisterLoggingHandler(logging.Handler):
                 session_id=session_id,
                 user_id=user_id,
             )
-        except Exception:
-            self.handleError(record)
+            return
+
+        self.client.capture_message(
+            message,
+            level=record.levelname.lower(),
+            context=context,
+            occurred_at=occurred_at,
+            trace_id=trace_id,
+            request_id=request_id,
+            session_id=session_id,
+            user_id=user_id,
+        )
 
 
 def instrument_logging(
@@ -93,6 +106,18 @@ def instrument_logging(
     if propagate is not None:
         target_logger.propagate = propagate
     return handler
+
+
+def _is_ignored(name: str) -> bool:
+    return any(name == prefix or name.startswith(f"{prefix}.") for prefix in _IGNORED_LOGGERS)
+
+
+def _in_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def _record_context(record: logging.LogRecord, default_context: Mapping[str, Any]) -> dict[str, Any]:

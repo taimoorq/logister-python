@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Callable
 
+from ._guard import captures_client_ip, safely
 from .client import LogisterClient
 from .tracing import TraceContext, trace_scope
 from inspect import iscoroutinefunction
@@ -58,24 +59,34 @@ class LogisterMiddleware:
             return response
 
     def _record(self, request, status):
+        # On the async path delivery is handed off so the event loop never blocks on it.
+        safely(self._record_transaction, request, status, defer=self.is_async)
+
+    def _record_transaction(self, request, status):
         if getattr(request, "_logister_recorded", False):
             return
         trace = getattr(request, "_logister_trace", None) or self._start(request)
-        duration_ms = (perf_counter() - request._logister_started_at) * 1000
-        name = _transaction_name(request, self.transaction_namer)
-        context = {**_request_context(request, status_code=status), **trace.fields()}
-        self.client.capture_transaction(name, duration_ms, context=context, trace_id=trace.trace_id, request_id=trace.request_id)
-        if self.capture_spans:
-            self.client.capture_span(name, duration_ms, context=context, **trace.fields(), kind="server",
-                status="error" if status and status >= 500 else "ok", started_at=request._logister_started_at_wall, ended_at=datetime.now(UTC))
         request._logister_recorded = True
+        duration_ms = (perf_counter() - getattr(request, "_logister_started_at", perf_counter())) * 1000
+        name = safely(_transaction_name, request, self.transaction_namer) or f"{getattr(request, 'method', 'GET')} {getattr(request, 'path', '/')}"
+        context = {**self._context(request, status), **trace.fields()}
+        safely(self.client.capture_transaction, name, duration_ms, context=context, trace_id=trace.trace_id, request_id=trace.request_id)
+        if self.capture_spans:
+            safely(self.client.capture_span, name, duration_ms, context=context, **trace.fields(), kind="server",
+                status="error" if status and status >= 500 else "ok", started_at=getattr(request, "_logister_started_at_wall", None), ended_at=datetime.now(UTC))
 
     def process_exception(self, request, exception):
-        self._record(request, 500)
-        trace = request._logister_trace
-        self.client.capture_exception(exception, context={**_request_context(request, status_code=500), **trace.fields()},
-            trace_id=trace.trace_id, request_id=trace.request_id)
+        safely(self._record_exception, request, exception, defer=self.is_async)
         return None
+
+    def _record_exception(self, request, exception):
+        self._record_transaction(request, 500)
+        trace = getattr(request, "_logister_trace", None) or self._start(request)
+        self.client.capture_exception(exception, context={**self._context(request, 500), **trace.fields()},
+            trace_id=trace.trace_id, request_id=trace.request_id)
+
+    def _context(self, request, status):
+        return _request_context(request, status_code=status, client_ip=captures_client_ip(self.client))
 
 
 def build_django_middleware(
@@ -103,10 +114,10 @@ def _transaction_name(request: Any, transaction_namer: TransactionNamer | None) 
     return f"{request.method} {request.path}"
 
 
-def _request_context(request: Any, *, status_code: int | None) -> dict[str, Any]:
-    headers = _request_headers(request)
+def _request_context(request: Any, *, status_code: int | None, client_ip: bool = False) -> dict[str, Any]:
+    headers = _request_headers(request, client_ip=client_ip)
     query_string = _meta(request).get("QUERY_STRING")
-    client_ip = _meta(request).get("REMOTE_ADDR")
+    client_ip = _meta(request).get("REMOTE_ADDR") if client_ip else None
     route = getattr(getattr(request, "resolver_match", None), "route", None)
     url = None
     build_absolute_uri = getattr(request, "build_absolute_uri", None)
@@ -159,7 +170,7 @@ def _request_id(request: Any) -> str | None:
     return _header(request, "HTTP_X_REQUEST_ID") or _header(request, "REQUEST_ID")
 
 
-def _request_headers(request: Any) -> dict[str, str]:
+def _request_headers(request: Any, *, client_ip: bool = False) -> dict[str, str]:
     allowed = {
         "HTTP_USER_AGENT": "User-Agent",
         "HTTP_ACCEPT": "Accept",
@@ -173,4 +184,5 @@ def _request_headers(request: Any) -> dict[str, str]:
         header_name: value
         for meta_key, header_name in allowed.items()
         if isinstance((value := _meta(request).get(meta_key)), str) and value.strip()
+        and (client_ip or meta_key != "HTTP_X_FORWARDED_FOR")
     }

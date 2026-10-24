@@ -58,6 +58,8 @@ Open the project inbox and confirm that **README test error** appears. A `401` r
 - [Package Links](#package-links)
 - [Install From PyPI](#install-from-pypi)
 - [Environment Variables](#environment-variables)
+- [Privacy and redaction](#privacy-and-redaction)
+- [Failure isolation](#failure-isolation)
 - [Core Client](#core-client)
 - [Python Logging](#python-logging)
 - [Error Capture](#error-capture)
@@ -142,6 +144,77 @@ Package index: https://pypi.org/project/logister-python/
 - `LOGISTER_COMMIT_SHA` (falls back to `GITHUB_SHA`)
 - `LOGISTER_BRANCH` (falls back to `GITHUB_REF_NAME`)
 - `LOGISTER_CAPTURE_LOCALS` (`true` / `false`, defaults to `false`)
+- `LOGISTER_CAPTURE_CLIENT_IP` (`true` / `false`, defaults to `false`; 0.6.0+)
+- `LOGISTER_CAPTURE_HOSTNAME` (`true` / `false`, defaults to `false`; 0.6.0+)
+- `LOGISTER_REDACT_KEYS` (comma-separated extra keys to redact; 0.6.0+)
+
+The same options are available as `LogisterClient(capture_client_ip=..., capture_hostname=..., redact_keys=[...])`.
+A `base_url` that uses plain `http://` to anything other than a loopback host
+(`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) emits a `UserWarning`, because
+the API key and events would travel unencrypted.
+
+## Privacy and redaction
+
+Starting with 0.6.0 every event's context is redacted before it is serialized.
+This uses the same default rules as the other Logister SDKs.
+
+- **Keys.** A key is sensitive when, lowercased with every non-alphanumeric
+  character removed, it equals one of `password`, `passwd`, `pwd`, `secret`,
+  `token`, `apikey`, `authorization`, `proxyauthorization`, `cookie`, `setcookie`,
+  `sessiontoken`, `sessionkey`, `credential`, `credentials`, `privatekey`,
+  `clientsecret`, `accesstoken`, `refreshtoken`, `idtoken`, `authtoken`, `xapikey`,
+  `xauthtoken`, `xaccesstoken`, `xcsrftoken`, `xxsrftoken`, `signature`, `ssn`,
+  `creditcard`, `cardnumber` or `cvv`, or contains `token`, `secret`, `password`,
+  `passwd`, `apikey`, `authorization`, `credential` or `cookie`. So `api_key`,
+  `X-API-Key`, `accessToken` and `stripe_secret_key` all match. Their values become
+  `"[REDACTED]"`.
+- **Values.** Strings are scrubbed for `Bearer <x>` and `Basic <x>` credentials,
+  JWT-shaped strings and `lgst_`-prefixed keys.
+- **URLs.** Captured URLs, query strings and `Referer` headers keep scheme, host and
+  path. Userinfo is dropped, and the value of any sensitive query parameter is
+  replaced.
+
+Redaction covers the request URL, query string and headers, `path_params` and
+`view_args`, `default_context` and per-call `context`, log record `extra` fields,
+span context, exception messages and frame locals. It also scrubs the event
+message. The SDK's own envelope fields (`uuid`, `event_type`, trace, span, request
+and session IDs) are added after redaction and are never changed.
+
+Add your own exact-match keys (normalized the same way) with
+`LogisterClient(redact_keys=["order_ref", "member_number"])` or
+`LOGISTER_REDACT_KEYS=order_ref,member_number`.
+
+Client IP addresses (`client_ip` and the `X-Forwarded-For` header) and host names
+are no longer sent by default. Opt in with `capture_client_ip=True` /
+`LOGISTER_CAPTURE_CLIENT_IP=true` and `capture_hostname=True` /
+`LOGISTER_CAPTURE_HOSTNAME=true`. The Python executable path is no longer sent.
+
+The helpers are public if you want the same rules elsewhere:
+
+```python
+from logister.redaction import redact, redact_url, scrub_string
+```
+
+## Failure isolation
+
+Automatic captures never raise into your application. That covers the FastAPI,
+Django and Flask integrations, Celery signal handlers and the logging handler. A
+rejected API key, a 5xx, a network error or a serialization bug is logged at
+`DEBUG` on the `logister` logger and the event is dropped. When a request handler
+raises, your original exception propagates unchanged.
+
+Values that JSON cannot represent (UUIDs, datetimes, `Decimal`, custom objects)
+are serialized with `str()`, and circular structures are cut. Manual calls such as
+`client.capture_message(...)` still raise `LogisterError` so scripts can see
+delivery failures.
+
+The FastAPI middleware, Django's async middleware path, and log records emitted
+inside a running event loop prepare each event on the caller. Delivery then runs on
+one background thread with a 1,000-event queue, so a slow Logister never blocks the
+event loop. When the queue is full, new events are dropped. Call `client.flush()`
+or `client.close()` at shutdown to wait for queued events. The HTTP client and the
+background thread are recreated after `fork()`, so pre-forking servers do not share
+connections with the parent.
 
 ## Core Client
 
@@ -195,7 +268,11 @@ What this records:
 - standard Python log records as `log` events
 - `logger.exception(...)` and other records with `exc_info` as `error` events
 - logger metadata like logger name, module, file, function, line number, process, and thread
-- extra record fields passed through `extra={...}` so request IDs, trace IDs, and app-specific details show up in Logister
+- extra record fields passed through `extra={...}` so request IDs, trace IDs, and app-specific details show up in Logister (redacted by the [default rules](#privacy-and-redaction))
+
+Records from the `logister`, `httpx` and `httpcore` loggers are ignored, and a record
+emitted while the handler is already sending is dropped. That makes it safe to attach
+the handler to the root logger at `INFO`: each log line produces exactly one event.
 
 You can also manage the underlying HTTP client explicitly:
 
@@ -228,11 +305,11 @@ except Exception as exc:
     )
 ```
 
-Captured Python exceptions include structured traceback frames, backtrace text, exception module and qualified class name, chained exceptions from `raise ... from ...`, and runtime metadata like Python version, platform, hostname, and process ID.
+Captured Python exceptions include structured traceback frames, backtrace text, exception module and qualified class name, chained exceptions from `raise ... from ...`, and runtime metadata like Python version, platform, and process ID (hostname only with `capture_hostname=True`).
 
 Set `LOGISTER_CAPTURE_LOCALS=true` if you want frame locals included in error events for the Logister UI.
 
-Frame locals can contain passwords, tokens, request bodies, and personal data. Leave this option off unless you have reviewed what your application keeps in local variables and your retention policy permits collecting it.
+Frame locals can contain passwords, tokens, request bodies, and personal data. Leave this option off unless you have reviewed what your application keeps in local variables and your retention policy permits collecting it. When it is on, `self`, `cls` and `request` are skipped. Other locals go through the [default redaction](#privacy-and-redaction): a local named `password` is replaced, and bearer tokens or JWTs in a repr are scrubbed.
 
 ## FastAPI
 
@@ -253,7 +330,10 @@ What this records:
 - request duration as a `transaction`
 - optional root `server` spans for request load waterfall charts when `capture_spans=True`
 - uncaught request exceptions as an `error`
-- request metadata like method, path, route, full URL, selected headers, client IP, path params, query string, `x-request-id`, and `x-trace-id`
+- request metadata like method, path, route, full URL, selected headers, path params, query string, `x-request-id`, and `x-trace-id` (client IP and `X-Forwarded-For` only with `capture_client_ip=True`)
+
+Events are prepared on the request task and delivered on a background thread, so the
+middleware never blocks the event loop on Logister. See [Failure isolation](#failure-isolation).
 
 You can customize transaction naming:
 
@@ -290,7 +370,7 @@ What this records:
 - task failures as an `error`
 - task retries as a warning `log`
 - optional task-level `check_in` events when you provide `monitor_slug_factory`
-- task metadata like queue, module, retry count, ETA, and worker hostname when Celery exposes it
+- task metadata like queue, module, retry count, and ETA when Celery exposes it, plus the worker hostname with `capture_hostname=True`
 
 ## Django
 
@@ -322,7 +402,7 @@ What Django middleware records:
 - request duration as a `transaction`
 - optional root `server` spans for request load waterfall charts when `capture_spans=True`
 - uncaught view exceptions via `process_exception()` as an `error`
-- request metadata like method, path, route, full URL, selected headers, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
+- request metadata like method, path, route, full URL, selected headers, status code, query string, `X-Request-ID`, and `X-Trace-ID` (client IP and `X-Forwarded-For` only with `capture_client_ip=True`)
 
 ## Flask
 
@@ -343,7 +423,7 @@ What Flask instrumentation records:
 - request duration as a `transaction`
 - optional root `server` spans for request load waterfall charts when `capture_spans=True`
 - uncaught request exceptions as an `error`
-- request metadata like method, path, full URL, endpoint, blueprint, selected headers, status code, client IP, query string, `X-Request-ID`, and `X-Trace-ID`
+- request metadata like method, path, full URL, endpoint, blueprint, selected headers, status code, query string, `X-Request-ID`, and `X-Trace-ID` (client IP and `X-Forwarded-For` only with `capture_client_ip=True`)
 
 ## Check-ins
 

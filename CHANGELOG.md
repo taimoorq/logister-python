@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.6.0 - 2026-10-23
+
+- Automatic captures never raise into the host application. FastAPI, Django, Flask, Celery and logging integrations log SDK failures (401/4xx, 5xx, network errors, serialization bugs, failing `transaction_namer`/`monitor_slug_factory`) at `DEBUG` on the `logister` logger and drop the event. Original application exceptions propagate unchanged.
+- Event serialization falls back to `str()` for UUIDs, datetimes, `Decimal` and custom objects (for example Flask `<uuid:...>` view args and FastAPI path params), and cuts circular structures.
+- The FastAPI middleware, Django's async path, and log records emitted inside a running event loop prepare events on the caller and deliver them on one bounded background thread, so a slow Logister no longer blocks the event loop. Added `LogisterClient.flush()`; `close()` now waits for queued events up to the client timeout.
+- `instrument_logging()` on the root logger no longer recurses through httpx's own `HTTP Request` log line. Records from `logister`, `httpx` and `httpcore` are ignored, and a reentrancy guard drops records emitted while sending.
+- Added default redaction shared with the other Logister SDKs. Sensitive keys and their values, bearer/basic credentials, JWTs, `lgst_` keys and sensitive URL query parameters are replaced with `[REDACTED]`. This covers URLs, query strings, `Referer`, headers, path params, view args, context, log `extra`, exception messages and frame locals. Add keys with `redact_keys` / `LOGISTER_REDACT_KEYS`.
+- **Default change:** the client IP and `X-Forwarded-For` are no longer captured unless `capture_client_ip=True` / `LOGISTER_CAPTURE_CLIENT_IP=true`.
+- **Default change:** the hostname (including the Celery worker hostname) is no longer sent unless `capture_hostname=True` / `LOGISTER_CAPTURE_HOSTNAME=true`. The `runtime_name` field (`sys.executable`) was removed.
+- Captured frame locals skip `self`, `cls` and `request`.
+- The HTTP client and background thread are recreated after `fork()`.
+- A plain `http://` `base_url` to a non-loopback host emits a `UserWarning`.
+
 ## v0.5.0 - 2026-09-24
 
 - Propagate task-local request context through Django, Flask, and FastAPI, including async Django handlers.

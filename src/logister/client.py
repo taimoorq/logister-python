@@ -2,24 +2,41 @@ from __future__ import annotations
 
 from .tracing import current_trace_context
 
+import ipaddress
 import os
 import json
 import time
+import warnings
+from contextlib import contextmanager
+from contextvars import ContextVar
 from uuid import UUID, uuid4
 import platform
 import secrets
 import socket
-import sys
 import traceback as traceback_module
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, time as dt_time, timezone
 from os import getpid
 from typing import Any, Mapping, Iterable
+from urllib.parse import urlsplit
 
 import httpx
 
 
-from .delivery import LogisterError, PreparedEvent, RetryPolicy, DeliveryResult, post, deliver_batch
+from .delivery import BackgroundDelivery, LogisterError, PreparedEvent, RetryPolicy, DeliveryResult, post, deliver_batch
+from .redaction import redact, scrub_string
+
+_deferred: ContextVar[bool] = ContextVar("logister_deferred_delivery", default=False)
+
+
+@contextmanager
+def deferred_delivery():
+    """Prepare events in the caller but hand their delivery to a background thread."""
+    token = _deferred.set(True)
+    try:
+        yield
+    finally:
+        _deferred.reset(token)
 
 
 @dataclass(slots=True)
@@ -34,9 +51,24 @@ class LogisterClient:
     branch: str | None = None
     default_context: Mapping[str, Any] | None = None
     capture_locals: bool = False
-    user_agent: str = "logister-python/0.5.0"
+    capture_client_ip: bool = False
+    capture_hostname: bool = False
+    redact_keys: Iterable[str] = ()
+    user_agent: str = "logister-python/0.6.0"
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     _http_client: httpx.Client | None = field(default=None, init=False, repr=False)
+    _http_client_pid: int | None = field(default=None, init=False, repr=False)
+    _background: BackgroundDelivery = field(default_factory=BackgroundDelivery, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.redact_keys = tuple(str(key) for key in self.redact_keys or ())
+        if _is_insecure_remote(self.base_url):
+            warnings.warn(
+                f"Logister base_url {self.base_url!r} uses plain http:// to a non-loopback host; "
+                "the API key and events are sent unencrypted. Use https://.",
+                UserWarning,
+                stacklevel=3,
+            )
 
     @classmethod
     def from_env(
@@ -51,6 +83,9 @@ class LogisterClient:
         commit_sha_var: str = "LOGISTER_COMMIT_SHA",
         branch_var: str = "LOGISTER_BRANCH",
         capture_locals_var: str = "LOGISTER_CAPTURE_LOCALS",
+        capture_client_ip_var: str = "LOGISTER_CAPTURE_CLIENT_IP",
+        capture_hostname_var: str = "LOGISTER_CAPTURE_HOSTNAME",
+        redact_keys_var: str = "LOGISTER_REDACT_KEYS",
         default_context: Mapping[str, Any] | None = None,
     ) -> "LogisterClient":
         api_key = os.getenv(api_key_var, "").strip()
@@ -72,6 +107,9 @@ class LogisterClient:
             branch=os.getenv(branch_var, "").strip() or os.getenv("GITHUB_REF_NAME", "").strip() or None,
             default_context=default_context,
             capture_locals=capture_locals,
+            capture_client_ip=_env_bool(os.getenv(capture_client_ip_var, "")),
+            capture_hostname=_env_bool(os.getenv(capture_hostname_var, "")),
+            redact_keys=tuple(key.strip() for key in os.getenv(redact_keys_var, "").split(",") if key.strip()),
         )
 
     def capture_exception(
@@ -404,7 +442,7 @@ class LogisterClient:
             "uuid": event_id,
             "event_type": event_type,
             "level": level,
-            "message": message,
+            "message": scrub_string(str(message)),
             "context": self._build_context(
                 context=context,
                 environment=environment,
@@ -442,10 +480,20 @@ class LogisterClient:
             if ended_at:
                 event_payload["ended_at"] = self._normalize_timestamp(ended_at)
             event_payload = {key: value for key, value in event_payload.items() if value is not None}
-        return PreparedEvent(event_id, json.dumps({"event": event_payload}, allow_nan=False, separators=(",", ":")).encode("utf-8"))
+        body = json.dumps({"event": event_payload}, allow_nan=False, default=_json_default, separators=(",", ":"))
+        return PreparedEvent(event_id, body.encode("utf-8"))
 
     def send_prepared_event(self, event: PreparedEvent) -> dict[str, Any]:
+        if _deferred.get():
+            accepted = self._background.submit(
+                lambda: self._send_prepared("/api/v1/ingest_events", event.body, {"Content-Type": "application/json"})
+            )
+            return {"status": "queued" if accepted else "dropped", "uuid": event.event_id}
         return self._send_prepared("/api/v1/ingest_events", event.body, {"Content-Type": "application/json"})
+
+    def flush(self, timeout: float | None = None) -> bool:
+        """Wait for events handed to background delivery; return True when none remain."""
+        return self._background.flush(self.retry_policy.total_timeout if timeout is None else timeout)
 
     def send_events(self, events: Iterable[PreparedEvent | Mapping[str, Any]]) -> list[DeliveryResult]:
         # Prepare all inputs before the first side effect; validation cannot leave
@@ -495,9 +543,11 @@ class LogisterClient:
         }
         return self._post("/api/v1/deployments", {"deployment": {key: value for key, value in payload.items() if value is not None}})
 
-    def close(self) -> None:
+    def close(self, timeout: float | None = None) -> None:
+        self.flush(self.timeout if timeout is None else timeout)
         if self._http_client is not None:
-            self._http_client.close()
+            if self._http_client_pid in (None, os.getpid()):
+                self._http_client.close()
             self._http_client = None
 
     def _exception_payload(self, error: BaseException) -> dict[str, Any]:
@@ -601,7 +651,11 @@ class LogisterClient:
         return data if isinstance(data, dict) else {"data": data}
 
     def _http(self) -> httpx.Client:
+        if self._http_client is not None and self._http_client_pid not in (None, os.getpid()):
+            # A forked child must not reuse (or close) the parent's pooled connections.
+            self._http_client = None
         if self._http_client is None:
+            self._http_client_pid = os.getpid()
             self._http_client = httpx.Client(
                 base_url=self.base_url.rstrip("/"),
                 timeout=self.timeout,
@@ -637,6 +691,8 @@ class LogisterClient:
     ) -> dict[str, Any]:
         merged = dict(self.default_context or {})
         merged.update(dict(context or {}))
+        # Redact user and integration data before adding SDK envelope fields.
+        merged = redact(merged, self.redact_keys)
 
         self._set_if_missing(merged, "environment", environment or self.environment)
         self._set_if_missing(merged, "release", release or self.release)
@@ -651,9 +707,9 @@ class LogisterClient:
         self._set_if_missing(merged, "python_version", platform.python_version())
         self._set_if_missing(merged, "python_implementation", platform.python_implementation())
         self._set_if_missing(merged, "platform", platform.platform())
-        self._set_if_missing(merged, "hostname", socket.gethostname())
+        if self.capture_hostname:
+            self._set_if_missing(merged, "hostname", socket.gethostname())
         self._set_if_missing(merged, "process_id", getpid())
-        self._set_if_missing(merged, "runtime_name", sys.executable)
         self._set_if_missing(merged, "transaction_name", transaction_name)
         self._set_if_missing(merged, "duration_ms", duration_ms)
         self._set_if_missing(merged, "expected_interval_seconds", expected_interval_seconds)
@@ -704,9 +760,40 @@ def _safe_repr(value: Any, *, max_length: int = 200) -> str:
     return rendered
 
 
+_SKIPPED_LOCALS = frozenset({"self", "cls", "request"})
+
+
 def _serialize_locals(values: Mapping[str, Any]) -> dict[str, str]:
+    # Values are redacted with the rest of the context in _build_context.
     return {
         str(key): _safe_repr(value)
         for key, value in values.items()
-        if not str(key).startswith("__")
+        if not str(key).startswith("__") and str(key) not in _SKIPPED_LOCALS
     }
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (datetime, date, dt_time)):
+        return value.isoformat()
+    if isinstance(value, (set, frozenset, tuple)):
+        return list(value)
+    try:
+        return str(value)
+    except Exception:
+        return object.__repr__(value)
+
+
+def _is_insecure_remote(base_url: str) -> bool:
+    try:
+        parts = urlsplit(base_url)
+    except ValueError:
+        return False
+    if parts.scheme.lower() != "http" or not parts.hostname:
+        return False
+    host = parts.hostname.lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
